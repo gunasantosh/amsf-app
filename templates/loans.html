@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}Loans - AMSF{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <div>
+        <h1 class="gradient-title">Loan Transparency</h1>
+        <p class="text-muted">Every member can see the status of every request, who has approved, who has rejected, and who is still pending.</p>
+    </div>
+</div>
+
+<div class="glass card">
+    <div class="card-title">All Loan Requests</div>
+    {% if loan_views %}
+        {% for item in loan_views %}
+        <details class="list-card loan-card-toggle">
+            <summary class="loan-card-summary">
+                <div>
+                    <div class="list-title">{{ item.requester_name }} - {{ item.loan.status }}</div>
+                    <div class="stat-label">Requested amount: Rs {{ "{:,.2f}".format(item.loan.amount_requested) }}</div>
+                    <div class="stat-label">Requested at: {{ item.loan.created_at.strftime("%Y-%m-%d %H:%M") if item.loan.created_at else "-" }}</div>
+                </div>
+                <div class="stat-label">Approvals: {{ item.approvals }}/{{ item.threshold }} | Rejections: {{ item.rejections }}</div>
+            </summary>
+            <div class="loan-card-body">
+                <p class="card-copy">{{ item.loan.reason }}</p>
+                {% if item.projection.total_return %}
+                <div class="stat-label">Projected return: Rs {{ "{:,.2f}".format(item.projection.total_return) }}</div>
+                <div class="stat-label">Monthly repayment for {{ item.projection.months }} month(s): Rs {{ "{:,.2f}".format(item.projection.monthly_installment) }}</div>
+                <div class="stat-label">Due date: {{ item.loan.due_date.strftime("%Y-%m-%d") if item.loan.due_date else "-" }}</div>
+                {% endif %}
+                <div class="vote-grid">
+                    {% for status in item.vote_statuses %}
+                    <div class="vote-chip">
+                        <strong>{{ status.display_name }}</strong>
+                        <span>{{ status.status }}</span>
+                        {% if status.timestamp %}
+                        <span>{{ status.timestamp.strftime("%Y-%m-%d %H:%M") }}</span>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% if item.loan.requester_id == current_user_id and item.loan.status == "Voting" %}
+                <form action="/api/loans/{{ item.loan.id }}/cancel" method="POST" class="inline-actions">
+                    <button class="btn btn-secondary" type="submit">Cancel Request</button>
+                </form>
+                {% endif %}
+            </div>
+        </details>
+        {% endfor %}
+    {% else %}
+    <div class="empty-state">No loan requests have been created yet.</div>
+    {% endif %}
+</div>
+{% endblock %}

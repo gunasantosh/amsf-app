@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="420" viewBox="0 0 420 420" fill="none">
+  <rect width="420" height="420" rx="28" fill="white"/>
+  <rect x="36" y="36" width="348" height="348" rx="18" fill="#0f172a"/>
+  <rect x="60" y="60" width="84" height="84" rx="8" fill="#5eead4"/>
+  <rect x="76" y="76" width="52" height="52" rx="6" fill="#0f172a"/>
+  <rect x="276" y="60" width="84" height="84" rx="8" fill="#818cf8"/>
+  <rect x="292" y="76" width="52" height="52" rx="6" fill="#0f172a"/>
+  <rect x="60" y="276" width="84" height="84" rx="8" fill="#fb7185"/>
+  <rect x="76" y="292" width="52" height="52" rx="6" fill="#0f172a"/>
+  <rect x="182" y="70" width="18" height="18" fill="#5eead4"/>
+  <rect x="214" y="70" width="18" height="18" fill="#fb7185"/>
+  <rect x="182" y="102" width="18" height="18" fill="#818cf8"/>
+  <rect x="214" y="102" width="18" height="18" fill="#5eead4"/>
+  <rect x="172" y="176" width="18" height="18" fill="#fb7185"/>
+  <rect x="204" y="176" width="18" height="18" fill="#5eead4"/>
+  <rect x="236" y="176" width="18" height="18" fill="#818cf8"/>
+  <rect x="268" y="176" width="18" height="18" fill="#5eead4"/>
+  <rect x="172" y="208" width="18" height="18" fill="#818cf8"/>
+  <rect x="236" y="208" width="18" height="18" fill="#fb7185"/>
+  <rect x="268" y="208" width="18" height="18" fill="#5eead4"/>
+  <rect x="172" y="240" width="18" height="18" fill="#5eead4"/>
+  <rect x="204" y="240" width="18" height="18" fill="#fb7185"/>
+  <rect x="236" y="240" width="18" height="18" fill="#818cf8"/>
+  <rect x="300" y="240" width="18" height="18" fill="#fb7185"/>
+  <rect x="172" y="272" width="18" height="18" fill="#818cf8"/>
+  <rect x="204" y="272" width="18" height="18" fill="#5eead4"/>
+  <rect x="268" y="272" width="18" height="18" fill="#fb7185"/>
+  <rect x="300" y="272" width="18" height="18" fill="#818cf8"/>
+  <rect x="172" y="304" width="18" height="18" fill="#5eead4"/>
+  <rect x="236" y="304" width="18" height="18" fill="#fb7185"/>
+  <rect x="268" y="304" width="18" height="18" fill="#818cf8"/>
+  <rect x="300" y="304" width="18" height="18" fill="#5eead4"/>
+  <text x="210" y="394" text-anchor="middle" fill="#94a3b8" font-family="Arial, sans-serif" font-size="18">AMSF UPI QR Placeholder</text>
+</svg>

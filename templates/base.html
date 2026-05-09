@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AMSF Web App{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="/static/css/style.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    {% block navbar %}
+    <nav class="navbar">
+        <a class="navbar-brand" href="/dashboard">AMSF Fund</a>
+        <div class="navbar-links">
+            <a href="/dashboard">Dashboard</a>
+            {% if user %}
+            <a href="/loans">Loans</a>
+            {% endif %}
+            {% if user and user.is_admin %}
+            <a href="/admin">Custodian Panel</a>
+            {% endif %}
+            {% if user %}
+            <a href="/investments">Investments</a>
+            <a href="/logout">Logout</a>
+            {% endif %}
+        </div>
+    </nav>
+    {% endblock %}
+
+    <div class="container">
+        {% if flash %}
+        <div class="flash flash-{{ flash_type }}">{{ flash }}</div>
+        {% endif %}
+        {% block content %}{% endblock %}
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

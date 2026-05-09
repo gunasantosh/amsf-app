@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - AMSF{% endblock %}
+
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <div>
+        <h1 class="gradient-title">Welcome back, {{ display_name }}</h1>
+        <p class="text-muted">Overview of your AMSF fund status.</p>
+    </div>
+</div>
+
+{% if payment_due %}
+<div class="glass alert-card">
+    <strong>Payment Due</strong>
+    <span>Your minimum monthly contribution is Rs {{ "{:,.2f}".format(monthly_contribution_due) }} short for this month and today is past the 10th.</span>
+</div>
+{% endif %}
+
+<div class="grid" style="margin-bottom: 2rem;">
+    <div class="glass card">
+        <div class="card-title">{{ due_status }}</div>
+        <div class="stat-value {% if due_status == 'Pending Dues' %}text-danger{% else %}text-success{% endif %}">
+            Rs {{ "{:,.2f}".format(due_amount) }}
+        </div>
+        <div class="stat-label">
+            Target: Rs {{ "{:,.2f}".format(target_amount) }} | Paid: Rs {{ "{:,.2f}".format(total_approved) }}
+        </div>
+    </div>
+
+    <div class="glass card">
+        <div class="card-title">This Month's Minimum</div>
+        <div class="stat-value {% if monthly_contribution_due > 0 %}text-danger{% else %}text-success{% endif %}">
+            Rs {{ "{:,.2f}".format(monthly_contribution_due) }}
+        </div>
+        <div class="stat-label">
+            Paid this month: Rs {{ "{:,.2f}".format(current_month_paid) }} / Rs 200.00 required minimum
+        </div>
+    </div>
+
+    <div class="glass card">
+        <div class="card-title">Loan Capacity Gauge</div>
+        <div class="chart-container" style="height: 180px;">
+            <canvas id="equityChart"></canvas>
+        </div>
+        <div id="equityMeta" class="chart-meta"></div>
+        <div class="stat-label">
+            This shows how much of your 2x approved-contribution loan limit is already in active sanctioned loans.
+        </div>
+    </div>
+
+    <div class="glass card">
+        <div class="card-title">Fund Health Donut</div>
+        <div class="chart-container" style="height: 180px;">
+            <canvas id="healthChart"></canvas>
+        </div>
+        <div id="healthMeta" class="chart-meta"></div>
+    </div>
+</div>
+
+<div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">The Contribution Pulse</div>
+    <div class="chart-switcher">
+        <button class="btn btn-secondary pulse-toggle is-active" type="button" data-period="daily">Daily</button>
+        <button class="btn btn-secondary pulse-toggle" type="button" data-period="weekly">Weekly</button>
+        <button class="btn btn-secondary pulse-toggle" type="button" data-period="monthly">Monthly</button>
+    </div>
+    <div class="chart-container">
+        <canvas id="pulseChart"></canvas>
+    </div>
+    <div id="pulseMeta" class="chart-meta"></div>
+</div>
+
+<div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">This Month's Total Obligation</div>
+    <div class="stat-value">Rs {{ "{:,.2f}".format(total_monthly_due) }}</div>
+    <div class="stat-label">Minimum contribution due this month: Rs {{ "{:,.2f}".format(monthly_contribution_due) }}</div>
+    <div class="stat-label">Loan repayment due this month: Rs {{ "{:,.2f}".format(monthly_loan_due) }}</div>
+    <div class="stat-label">Loan repayment already approved this month: Rs {{ "{:,.2f}".format(approved_repayments_this_month) }} / Rs {{ "{:,.2f}".format(projected_monthly_installment) }}</div>
+</div>
+
+<div class="grid" style="margin-bottom: 2rem;">
+    <div class="glass card">
+        <div class="card-title">Make a Contribution</div>
+        <p class="card-copy">
+            Scan the UPI QR code below and submit the transaction details for Custodian approval.
+        </p>
+        <div class="qr-panel">
+            <img src="/static/img/UPI%20QR.jpeg" alt="AMSF UPI QR code" class="qr-image">
+            <div class="stat-label">Use this QR to pay AMSF, then report the transaction below for custodian verification.</div>
+        </div>
+        <form action="/api/contributions/report" method="POST" class="stack-form">
+            <div class="form-group">
+                <label for="amount">Amount Sent</label>
+                <input id="amount" name="amount" class="form-control" type="number" min="1" step="0.01" required>
+            </div>
+            <div class="form-group">
+                <label for="transfer_date">Transfer Date</label>
+                <input id="transfer_date" name="transfer_date" class="form-control" type="date" value="{{ today }}" required>
+            </div>
+            <button class="btn" type="submit">Report Payment</button>
+        </form>
+    </div>
+
+    <div class="glass card">
+        <div class="card-title">Loan Request</div>
+        <p class="card-copy">
+            Your current request ceiling is Rs {{ "{:,.2f}".format(loan_cap) }}. Active sanctioned loans are using {{ "{:,.1f}".format(loan_capacity_percent) }}% of it.
+        </p>
+        <div class="stat-label">Used: Rs {{ "{:,.2f}".format(current_loan_exposure) }} | Available: Rs {{ "{:,.2f}".format(available_loan_capacity) }}</div>
+        <div class="stat-label">Use the Loans tab for the full transparent voting process and stakeholder status.</div>
+        <form action="/api/loans/request" method="POST" class="stack-form">
+            <div class="form-group">
+                <label for="amount_requested">Loan Amount</label>
+                <input id="amount_requested" name="amount_requested" class="form-control" type="number" min="1" step="0.01" required>
+            </div>
+            <div class="form-group">
+                <label for="reason">Reason</label>
+                <textarea id="reason" name="reason" class="form-control form-textarea" required placeholder="What is the loan for?"></textarea>
+            </div>
+            <button class="btn" type="submit">Open Voting</button>
+        </form>
+    </div>
+    <div class="glass card">
+        <div class="card-title">Loan Repayment</div>
+        <p class="card-copy">
+            Report a loan repayment separately from your contribution so the custodian can verify it against the right sanctioned loan.
+        </p>
+        {% if sanctioned_loans %}
+        <form action="/api/loan-repayments/report" method="POST" class="stack-form">
+            <div class="form-group">
+                <label for="loan_id">Sanctioned Loan</label>
+                <select id="loan_id" name="loan_id" class="form-control select-control" required>
+                    {% for loan in sanctioned_loans %}
+                    <option value="{{ loan.id }}">Loan #{{ loan.id }} - Rs {{ "{:,.2f}".format(loan.amount_requested) }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="repayment_amount">Repayment Amount</label>
+                <input id="repayment_amount" name="amount" class="form-control" type="number" min="1" step="0.01" required>
+            </div>
+            <div class="form-group">
+                <label for="repayment_date">Repayment Date</label>
+                <input id="repayment_date" name="transfer_date" class="form-control" type="date" value="{{ today }}" required>
+            </div>
+            <button class="btn" type="submit">Report Repayment</button>
+        </form>
+        {% else %}
+        <div class="empty-state">You do not have any sanctioned loans to repay right now.</div>
+        {% endif %}
+    </div>
+    <div class="glass card">
+        <div class="card-title">Alias Shield</div>
+        <p class="card-copy">
+            Public screens only show your alias. If you leave it blank, the app falls back to your member ID.
+        </p>
+        <form action="/api/profile/alias" method="POST" class="stack-form">
+            <div class="form-group">
+                <label for="alias">Display Alias</label>
+                <input id="alias" name="alias" class="form-control" type="text" value="{{ user.alias or '' }}">
+            </div>
+            <button class="btn btn-secondary" type="submit">Save Alias</button>
+        </form>
+    </div>
+</div>
+
+<div class="grid" style="margin-bottom: 2rem;">
+    <div class="glass card">
+        <div class="card-title">Baseline Comparison</div>
+        <div class="chart-container">
+            <canvas id="baselineChart"></canvas>
+        </div>
+        <div id="baselineMeta" class="chart-meta"></div>
+    </div>
+    <div class="glass card">
+        <div class="card-title">Personal vs Group</div>
+        <div class="chart-container">
+            <canvas id="splitChart"></canvas>
+        </div>
+        <div id="splitMeta" class="chart-meta"></div>
+    </div>
+</div>
+
+<div class="grid" style="margin-bottom: 2rem;">
+    <div class="glass card">
+        <div class="card-title">Active Votes</div>
+        {% if pending_votes %}
+            {% for item in pending_votes %}
+            <div class="list-card">
+                <div class="list-title">{{ item.requester_name }}</div>
+                <div class="stat-label">Requested Rs {{ "{:,.2f}".format(item.loan.amount_requested) }}</div>
+                <div class="stat-label">Requested at: {{ item.loan.created_at.strftime("%Y-%m-%d %H:%M") if item.loan.created_at else "-" }}</div>
+                <p class="card-copy">{{ item.loan.reason }}</p>
+                <div class="stat-label">Approvals: {{ item.approvals }}/{{ item.threshold }} | Rejections: {{ item.rejections }}</div>
+                <form action="/api/loans/{{ item.loan.id }}/vote" method="POST" class="inline-actions">
+                    <button class="btn" type="submit" name="vote" value="Approve">Approve</button>
+                    <button class="btn btn-secondary" type="submit" name="vote" value="Reject">Reject</button>
+                </form>
+            </div>
+            {% endfor %}
+        {% else %}
+        <div class="empty-state">No loans are waiting for your vote right now.</div>
+        {% endif %}
+    </div>
+
+    <div class="glass card">
+        <div class="card-title">My Loan Requests</div>
+        {% if my_loans %}
+            {% for item in my_loans %}
+            <div class="list-card">
+                <div class="list-title">{{ item.loan.status }}</div>
+                <div class="stat-label">Amount: Rs {{ "{:,.2f}".format(item.loan.amount_requested) }}</div>
+                <div class="stat-label">Requested at: {{ item.loan.created_at.strftime("%Y-%m-%d %H:%M") if item.loan.created_at else "-" }}</div>
+                <div class="stat-label">Approvals: {{ item.approvals }}/{{ item.threshold }} | Rejections: {{ item.rejections }}</div>
+                {% if item.projection.total_return %}
+                <div class="stat-label">Projected return: Rs {{ "{:,.2f}".format(item.projection.total_return) }} over {{ item.projection.months }} month(s)</div>
+                <div class="stat-label">Estimated monthly repayment: Rs {{ "{:,.2f}".format(item.projection.monthly_installment) }}</div>
+                {% endif %}
+                {% if item.loan.status == "Voting" %}
+                <form action="/api/loans/{{ item.loan.id }}/cancel" method="POST" class="inline-actions">
+                    <button class="btn btn-secondary" type="submit">Cancel Request</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endfor %}
+        {% else %}
+        <div class="empty-state">You have not requested any loans yet.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="glass card">
+    <div class="card-title">Contribution Table</div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Custodian Feedback</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for contribution in personal_contributions %}
+                <tr>
+                    <td>{{ contribution.transfer_date.strftime("%Y-%m-%d") }}</td>
+                    <td>Rs {{ "{:,.2f}".format(contribution.amount) }}</td>
+                    <td>{{ contribution.status }}</td>
+                    <td>{{ contribution.custodian_feedback or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="glass card" style="margin-top: 2rem;">
+    <div class="card-title">Loan Repayment Table</div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Loan</th>
+                    <th>Date</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Custodian Feedback</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for repayment in loan_repayments %}
+                <tr>
+                    <td>#{{ repayment.loan_id }}</td>
+                    <td>{{ repayment.transfer_date.strftime("%Y-%m-%d") }}</td>
+                    <td>Rs {{ "{:,.2f}".format(repayment.amount) }}</td>
+                    <td>{{ repayment.status }}</td>
+                    <td>{{ repayment.custodian_feedback or "-" }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5">No loan repayments have been reported yet.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/charts.js"></script>
+{% endblock %}

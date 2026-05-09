@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+
+{% block title %}Custodian Panel - AMSF{% endblock %}
+
+{% block content %}
+<div class="dashboard-header">
+    <div>
+        <h1 class="gradient-title">Custodian Panel</h1>
+        <p class="text-muted">Verify contributions, monitor fund health, and finalize loans once member majority is reached.</p>
+    </div>
+</div>
+
+<div class="grid" style="margin-bottom: 2rem;">
+    <div class="glass card">
+        <div class="card-title">Total Fund Balance</div>
+        <div class="stat-value">Rs {{ "{:,.2f}".format(total_fund) }}</div>
+    </div>
+    <div class="glass card">
+        <div class="card-title">Liquid Cash</div>
+        <div class="stat-value text-success">Rs {{ "{:,.2f}".format(liquid_cash) }}</div>
+    </div>
+    <div class="glass card">
+        <div class="card-title">Projected Interest</div>
+        <div class="stat-value text-accent">Rs {{ "{:,.2f}".format(total_interest) }}</div>
+    </div>
+</div>
+
+<div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">Custodian Assignment</div>
+    <div class="stat-label">Current custodian: {{ user.original_name }}</div>
+    <form action="/api/admin/change-custodian" method="POST" class="inline-actions">
+        <select name="member_id" class="form-control select-control" required>
+            {% for member in members %}
+            <option value="{{ member.id }}" {% if member.is_admin %}selected{% endif %}>{{ member.original_name }}</option>
+            {% endfor %}
+        </select>
+        <button class="btn" type="submit">Change Custodian</button>
+    </form>
+</div>
+
+<div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">Contribution Approval Queue</div>
+    {% if pending_contributions %}
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Member</th>
+                    <th>Amount</th>
+                    <th>Date</th>
+                    <th>Reported At</th>
+                    <th>Decision</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for contribution in pending_contributions %}
+                <tr>
+                    <td>{{ member_lookup[contribution.member_id] }}</td>
+                    <td>Rs {{ "{:,.2f}".format(contribution.amount) }}</td>
+                    <td>{{ contribution.transfer_date.strftime("%Y-%m-%d") }}</td>
+                    <td>{{ contribution.created_at.strftime("%Y-%m-%d %H:%M") if contribution.created_at else "-" }}</td>
+                    <td>
+                        <div class="inline-actions">
+                            <form action="/api/admin/contributions/{{ contribution.id }}/approve" method="POST">
+                                <button class="btn" type="submit">Approve</button>
+                            </form>
+                            <form action="/api/admin/contributions/{{ contribution.id }}/revert" method="POST" class="revert-form">
+                                <input name="feedback" class="form-control" placeholder="Reason for revert" required>
+                                <button class="btn btn-secondary" type="submit">Revert</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">No contributions are waiting for review.</div>
+    {% endif %}
+</div>
+
+<div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">Loan Repayment Approval Queue</div>
+    {% if pending_loan_repayments %}
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Member</th>
+                    <th>Loan</th>
+                    <th>Amount</th>
+                    <th>Date</th>
+                    <th>Reported At</th>
+                    <th>Decision</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for repayment in pending_loan_repayments %}
+                <tr>
+                    <td>{{ member_lookup[repayment.member_id] }}</td>
+                    <td>#{{ repayment.loan_id }}</td>
+                    <td>Rs {{ "{:,.2f}".format(repayment.amount) }}</td>
+                    <td>{{ repayment.transfer_date.strftime("%Y-%m-%d") }}</td>
+                    <td>{{ repayment.created_at.strftime("%Y-%m-%d %H:%M") if repayment.created_at else "-" }}</td>
+                    <td>
+                        <div class="inline-actions">
+                            <form action="/api/admin/loan-repayments/{{ repayment.id }}/approve" method="POST">
+                                <button class="btn" type="submit">Approve</button>
+                            </form>
+                            <form action="/api/admin/loan-repayments/{{ repayment.id }}/revert" method="POST" class="revert-form">
+                                <input name="feedback" class="form-control" placeholder="Reason for revert" required>
+                                <button class="btn btn-secondary" type="submit">Revert</button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">No loan repayments are waiting for review.</div>
+    {% endif %}
+</div>
+
+<div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">All Members Contribution Summary</div>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Member</th>
+                    <th>Approved</th>
+                    <th>Pending</th>
+                    <th>Reverted</th>
+                    <th>Target</th>
+                    <th>Completion</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in member_rows %}
+                <tr>
+                    <td>
+                        {{ row.display_name }}
+                        {% if row.member.alias %}
+                        <div class="stat-label">Alias: {{ row.public_name }}</div>
+                        {% endif %}
+                    </td>
+                    <td>Rs {{ "{:,.2f}".format(row.approved_total) }}</td>
+                    <td>Rs {{ "{:,.2f}".format(row.pending_total) }}</td>
+                    <td>Rs {{ "{:,.2f}".format(row.reverted_total) }}</td>
+                    <td>Rs {{ "{:,.2f}".format(row.target_total) }}</td>
+                    <td>{{ "{:,.1f}".format(row.completion_percent) }}%</td>
+                    <td>{{ row.due_status }}: Rs {{ "{:,.2f}".format(row.due_amount) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="glass card">
+    <div class="card-title">Loan Management</div>
+    {% if loan_views %}
+        {% for item in loan_views %}
+        <details class="list-card loan-card-toggle">
+            <summary class="loan-card-summary">
+                <div>
+                    <div class="list-title">{{ item.requester_name }} - {{ item.loan.status }}</div>
+                    <div class="stat-label">Requested Rs {{ "{:,.2f}".format(item.loan.amount_requested) }}</div>
+                    <div class="stat-label">Requested at: {{ item.loan.created_at.strftime("%Y-%m-%d %H:%M") if item.loan.created_at else "-" }}</div>
+                </div>
+                <div class="stat-label">Votes: {{ item.approvals }} approve / {{ item.rejections }} reject - Majority needed: {{ item.threshold }}</div>
+            </summary>
+            <div class="loan-card-body">
+                <p class="card-copy">{{ item.loan.reason }}</p>
+                <div class="vote-grid">
+                    {% for status in item.vote_statuses %}
+                    <div class="vote-chip">
+                        <strong>{{ status.display_name }}</strong>
+                        {% if status.original_name and status.original_name != status.display_name %}
+                        <span>Alias: {{ status.original_name }}</span>
+                        {% endif %}
+                        <span>{{ status.status }}</span>
+                        {% if status.timestamp %}
+                        <span>{{ status.timestamp.strftime("%Y-%m-%d %H:%M") }}</span>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% if item.loan.status == "Voting" %}
+                <div class="inline-actions inline-actions-stretch">
+                    <form action="/api/admin/loans/{{ item.loan.id }}/sanction" method="POST" class="sanction-form">
+                        <input name="interest_rate" class="form-control" type="number" min="0" step="0.01" placeholder="Interest %" required>
+                        <input name="repayment_months" class="form-control" type="number" min="1" step="1" placeholder="Repayment months" required>
+                        <button class="btn" type="submit" {% if item.approvals < item.threshold %}disabled{% endif %}>Sanction</button>
+                    </form>
+                    <form action="/api/admin/loans/{{ item.loan.id }}/reject" method="POST">
+                        <button class="btn btn-secondary" type="submit">Reject</button>
+                    </form>
+                </div>
+                {% else %}
+                    {% if item.projection.total_return %}
+                    <div class="stat-label">Projected return: Rs {{ "{:,.2f}".format(item.projection.total_return) }}</div>
+                    <div class="stat-label">Monthly repayment over {{ item.projection.months }} month(s): Rs {{ "{:,.2f}".format(item.projection.monthly_installment) }}</div>
+                    <div class="stat-label">Due date: {{ item.loan.due_date.strftime("%Y-%m-%d") if item.loan.due_date else "-" }}</div>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </details>
+        {% endfor %}
+    {% else %}
+    <div class="empty-state">No loans have been created yet.</div>
+    {% endif %}
+</div>
+{% endblock %}

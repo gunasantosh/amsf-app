@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv
+
+# Local environment config
+.env
+
+# Local databases and journals
+*.db
+*.db-journal
+*.sqlite3
+*.sqlite3-journal
+
+# Logs
+*.log
+
+# Editor files
+.vscode/
+.idea/
