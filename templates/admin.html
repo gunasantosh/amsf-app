@@ -49,6 +49,7 @@
                     <th>Amount</th>
                     <th>Date</th>
                     <th>Reported At</th>
+                    <th>Recent Member Reports</th>
                     <th>Decision</th>
                 </tr>
             </thead>
@@ -58,7 +59,21 @@
                     <td>{{ member_lookup[contribution.member_id] }}</td>
                     <td>Rs {{ "{:,.2f}".format(contribution.amount) }}</td>
                     <td>{{ contribution.transfer_date.strftime("%Y-%m-%d") }}</td>
-                    <td>{{ contribution.created_at.strftime("%Y-%m-%d %H:%M") if contribution.created_at else "-" }}</td>
+                    <td>{{ contribution.created_at|local_datetime }}</td>
+                    <td>
+                        <details>
+                            <summary>View history</summary>
+                            <div class="mini-history">
+                                {% for previous in contribution_history_by_member[contribution.member_id] %}
+                                <div>
+                                    <strong>Rs {{ "{:,.2f}".format(previous.amount) }}</strong>
+                                    <span class="status-pill status-{{ previous.status|lower }}">{{ previous.status }}</span>
+                                    <div class="stat-label">{{ previous.transfer_date.strftime("%Y-%m-%d") }} reported {{ previous.created_at|local_datetime }}</div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </details>
+                    </td>
                     <td>
                         <div class="inline-actions">
                             <form action="/api/admin/contributions/{{ contribution.id }}/approve" method="POST">
@@ -102,7 +117,7 @@
                     <td>#{{ repayment.loan_id }}</td>
                     <td>Rs {{ "{:,.2f}".format(repayment.amount) }}</td>
                     <td>{{ repayment.transfer_date.strftime("%Y-%m-%d") }}</td>
-                    <td>{{ repayment.created_at.strftime("%Y-%m-%d %H:%M") if repayment.created_at else "-" }}</td>
+                    <td>{{ repayment.created_at|local_datetime }}</td>
                     <td>
                         <div class="inline-actions">
                             <form action="/api/admin/loan-repayments/{{ repayment.id }}/approve" method="POST">
@@ -161,6 +176,76 @@
     </div>
 </div>
 
+<div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">Financial Activity Ledger</div>
+    <p class="card-copy">Append-only history of reports, decisions, votes, cancellations, sanctions, and custodian changes.</p>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Summary</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for event in recent_events %}
+                <tr>
+                    <td>{{ event.created_at|local_datetime }}</td>
+                    <td>{{ event.event_type }}</td>
+                    <td>{{ event.summary }}</td>
+                    <td>{{ event.details or "-" }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">New activity will appear here as actions are taken.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">Email Delivery Outbox</div>
+    <p class="card-copy">Persisted delivery status for operational notifications. Failed items stay visible for diagnosis.</p>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Created</th>
+                    <th>Recipient</th>
+                    <th>Subject</th>
+                    <th>Status</th>
+                    <th>Error</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for notification in recent_notifications %}
+                <tr>
+                    <td>{{ notification.created_at|local_datetime }}</td>
+                    <td>{{ notification.recipient_email }}</td>
+                    <td>{{ notification.subject }}</td>
+                    <td><span class="status-pill status-{{ notification.status|lower }}">{{ notification.status }}</span></td>
+                    <td>{{ notification.error_message or "-" }}</td>
+                    <td>
+                        {% if notification.status != "Sent" %}
+                        <form action="/api/admin/notifications/{{ notification.id }}/retry" method="POST">
+                            <button class="btn btn-secondary" type="submit">Retry</button>
+                        </form>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="6">No operational emails have been queued yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
 <div class="glass card">
     <div class="card-title">Loan Management</div>
     {% if loan_views %}
@@ -170,7 +255,7 @@
                 <div>
                     <div class="list-title">{{ item.requester_name }} - {{ item.loan.status }}</div>
                     <div class="stat-label">Requested Rs {{ "{:,.2f}".format(item.loan.amount_requested) }}</div>
-                    <div class="stat-label">Requested at: {{ item.loan.created_at.strftime("%Y-%m-%d %H:%M") if item.loan.created_at else "-" }}</div>
+                    <div class="stat-label">Requested at: {{ item.loan.created_at|local_datetime }}</div>
                 </div>
                 <div class="stat-label">Votes: {{ item.approvals }} approve / {{ item.rejections }} reject - Majority needed: {{ item.threshold }}</div>
             </summary>
@@ -185,7 +270,7 @@
                         {% endif %}
                         <span>{{ status.status }}</span>
                         {% if status.timestamp %}
-                        <span>{{ status.timestamp.strftime("%Y-%m-%d %H:%M") }}</span>
+                        <span>{{ status.timestamp|local_datetime }}</span>
                         {% endif %}
                     </div>
                     {% endfor %}
@@ -205,7 +290,7 @@
                     {% if item.projection.total_return %}
                     <div class="stat-label">Projected return: Rs {{ "{:,.2f}".format(item.projection.total_return) }}</div>
                     <div class="stat-label">Monthly repayment over {{ item.projection.months }} month(s): Rs {{ "{:,.2f}".format(item.projection.monthly_installment) }}</div>
-                    <div class="stat-label">Due date: {{ item.loan.due_date.strftime("%Y-%m-%d") if item.loan.due_date else "-" }}</div>
+                    <div class="stat-label">Due date: {{ item.loan.due_date|local_date }}</div>
                     {% endif %}
                 {% endif %}
             </div>

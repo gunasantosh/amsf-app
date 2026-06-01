@@ -13,7 +13,7 @@ async def send_email(
     subject: str,
     text_body: str,
     html_body: Optional[str] = None,
-) -> None:
+) -> bool:
     smtp_host = os.getenv("AMSF_SMTP_HOST")
     smtp_port = int(os.getenv("AMSF_SMTP_PORT", "587"))
     smtp_user = os.getenv("AMSF_SMTP_USER")
@@ -23,7 +23,7 @@ async def send_email(
     if not smtp_host:
         print(f"Email skipped for {recipient}. Configure SMTP. Subject: {subject}")
         print(text_body)
-        return
+        return False
 
     message = EmailMessage()
     message["From"] = smtp_from
@@ -41,7 +41,8 @@ async def send_email(
         password=smtp_password,
         start_tls=True,
     )
+    return True
 
 
-def send_email_sync(recipient: str, subject: str, text_body: str, html_body: Optional[str] = None) -> None:
-    asyncio.run(send_email(recipient, subject, text_body, html_body))
+def send_email_sync(recipient: str, subject: str, text_body: str, html_body: Optional[str] = None) -> bool:
+    return asyncio.run(send_email(recipient, subject, text_body, html_body))

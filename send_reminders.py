@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 import os
 
 from sqlalchemy import func
@@ -6,8 +7,10 @@ from sqlalchemy import func
 import settings  # noqa: F401
 from database import Contribution, Loan, LoanRepayment, Member, ReminderDispatchLog, SessionLocal, init_db
 from mailer import send_email_sync
+from money import ZERO, money
+from app_time import local_now
 
-MONTHLY_BASELINE = 200.0
+MONTHLY_BASELINE = Decimal("200.00")
 PUBLIC_BASE_URL = os.getenv("AMSF_PUBLIC_BASE_URL", "").rstrip("/")
 
 
@@ -23,7 +26,7 @@ def build_dashboard_link() -> str:
 
 def loan_monthly_due_for_member(db, member_id: int, now: datetime) -> tuple[float, float]:
     sanctioned_loans = db.query(Loan).filter(Loan.requester_id == member_id, Loan.status == "Sanctioned").all()
-    projected_monthly_installment = 0.0
+    projected_monthly_installment = ZERO
     for loan in sanctioned_loans:
         if loan.interest_rate is None or not loan.repayment_months:
             continue
@@ -39,9 +42,9 @@ def loan_monthly_due_for_member(db, member_id: int, now: datetime) -> tuple[floa
             func.strftime("%m", LoanRepayment.transfer_date) == now.strftime("%m"),
         )
         .scalar()
-        or 0.0
+        or ZERO
     )
-    return round(projected_monthly_installment, 2), round(max(0.0, projected_monthly_installment - approved_repayments_this_month), 2)
+    return money(projected_monthly_installment), max(ZERO, money(projected_monthly_installment - approved_repayments_this_month))
 
 
 def contribution_due_for_member(db, member_id: int, now: datetime) -> tuple[float, float]:
@@ -54,9 +57,9 @@ def contribution_due_for_member(db, member_id: int, now: datetime) -> tuple[floa
             func.strftime("%m", Contribution.transfer_date) == now.strftime("%m"),
         )
         .scalar()
-        or 0.0
+        or ZERO
     )
-    return round(current_month_paid, 2), round(max(0.0, MONTHLY_BASELINE - current_month_paid), 2)
+    return money(current_month_paid), max(ZERO, money(MONTHLY_BASELINE - current_month_paid))
 
 
 def build_reminder_bodies(member_name: str, reminder_type: str, contribution_due: float, loan_due: float, dashboard_link: str) -> tuple[str, str, str]:
@@ -101,7 +104,7 @@ def build_reminder_bodies(member_name: str, reminder_type: str, contribution_due
 
 def main() -> None:
     init_db()
-    now = datetime.utcnow()
+    now = local_now()
     day = now.day
     if day < 5 or day > 15:
         print(f"No reminders due today ({now.date()}).")

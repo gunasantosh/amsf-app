@@ -1,16 +1,18 @@
 import os
 from sqlite3 import OperationalError
 from datetime import datetime
+from decimal import Decimal
 
 import pandas as pd
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, create_engine, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 import settings  # noqa: F401
+from app_time import local_now, utc_now
 
 DATABASE_URL = os.getenv("AMSF_DATABASE_URL", "sqlite:///./amsf.db")
 DEFAULT_PASSWORD = os.getenv("AMSF_DEFAULT_PASSWORD", "amsf123")
-MONTHLY_BASELINE = 200.0
+MONTHLY_BASELINE = Decimal("200.00")
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -24,10 +26,10 @@ class Member(Base):
     hashed_password = Column(String)
     alias = Column(String, nullable=True)
     is_admin = Column(Boolean, default=False)
-    join_date = Column(DateTime, default=datetime.utcnow)
+    join_date = Column(DateTime, default=utc_now)
     password_changed = Column(Boolean, default=False)
 
-    contributions = relationship("Contribution", back_populates="member")
+    contributions = relationship("Contribution", back_populates="member", foreign_keys="Contribution.member_id")
     loans = relationship("Loan", back_populates="requester")
     reset_tokens = relationship("PasswordResetToken", back_populates="member")
 
@@ -36,26 +38,28 @@ class Contribution(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     member_id = Column(Integer, ForeignKey("members.id"))
-    amount = Column(Float)
+    amount = Column(Numeric(12, 2))
     transfer_date = Column(DateTime)
     status = Column(String, default="Approved") # Pending, Approved, Reverted
     custodian_feedback = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_by_id = Column(Integer, ForeignKey("members.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
 
-    member = relationship("Member", back_populates="contributions")
+    member = relationship("Member", back_populates="contributions", foreign_keys=[member_id])
 
 class Loan(Base):
     __tablename__ = "loans"
 
     id = Column(Integer, primary_key=True, index=True)
     requester_id = Column(Integer, ForeignKey("members.id"))
-    amount_requested = Column(Float)
+    amount_requested = Column(Numeric(12, 2))
     reason = Column(String)
-    interest_rate = Column(Float, nullable=True)
+    interest_rate = Column(Numeric(7, 4), nullable=True)
     due_date = Column(DateTime, nullable=True)
     repayment_months = Column(Integer, nullable=True)
     status = Column(String, default="Voting") # Voting, Sanctioned, Rejected
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
     requester = relationship("Member", back_populates="loans")
     votes = relationship("LoanVote", back_populates="loan")
     repayments = relationship("LoanRepayment", back_populates="loan")
@@ -67,7 +71,7 @@ class LoanVote(Base):
     loan_id = Column(Integer, ForeignKey("loans.id"))
     voter_id = Column(Integer, ForeignKey("members.id"))
     vote = Column(String) # Approve, Reject
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
     loan = relationship("Loan", back_populates="votes")
 
 
@@ -77,11 +81,13 @@ class LoanRepayment(Base):
     id = Column(Integer, primary_key=True, index=True)
     loan_id = Column(Integer, ForeignKey("loans.id"))
     member_id = Column(Integer, ForeignKey("members.id"))
-    amount = Column(Float)
+    amount = Column(Numeric(12, 2))
     transfer_date = Column(DateTime)
     status = Column(String, default="Pending")  # Pending, Approved, Reverted
     custodian_feedback = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_by_id = Column(Integer, ForeignKey("members.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
 
     loan = relationship("Loan", back_populates="repayments")
 
@@ -94,7 +100,7 @@ class PasswordResetToken(Base):
     token = Column(String, unique=True, index=True, nullable=False)
     expires_at = Column(DateTime, nullable=False)
     used_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
 
     member = relationship("Member", back_populates="reset_tokens")
 
@@ -106,7 +112,39 @@ class ReminderDispatchLog(Base):
     member_id = Column(Integer, ForeignKey("members.id"), nullable=False, index=True)
     reminder_type = Column(String, nullable=False)
     reminder_date = Column(String, nullable=False, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    actor_id = Column(Integer, ForeignKey("members.id"), nullable=True, index=True)
+    subject_member_id = Column(Integer, ForeignKey("members.id"), nullable=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    entity_type = Column(String, nullable=False, index=True)
+    entity_id = Column(Integer, nullable=True, index=True)
+    summary = Column(String, nullable=False)
+    details = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False, index=True)
+
+
+class NotificationLog(Base):
+    __tablename__ = "notification_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recipient_member_id = Column(Integer, ForeignKey("members.id"), nullable=True, index=True)
+    recipient_email = Column(String, nullable=False, index=True)
+    subject = Column(String, nullable=False)
+    text_body = Column(Text, nullable=False)
+    html_body = Column(Text, nullable=True)
+    event_type = Column(String, nullable=False, index=True)
+    entity_type = Column(String, nullable=False, index=True)
+    entity_id = Column(Integer, nullable=True, index=True)
+    status = Column(String, default="Queued", nullable=False, index=True)  # Queued, Sent, Skipped, Failed
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False, index=True)
+    sent_at = Column(DateTime, nullable=True)
 
 def get_db():
     db = SessionLocal()
@@ -121,7 +159,7 @@ def get_display_name(member: Member) -> str:
 
 
 def months_active_since(join_date: datetime, now: datetime | None = None) -> int:
-    now = now or datetime.utcnow()
+    now = now or local_now()
     return max(1, (now.year - join_date.year) * 12 + (now.month - join_date.month) + 1)
 
 
@@ -139,7 +177,7 @@ def parse_row_date(row: pd.Series) -> datetime:
             parsed = pd.to_datetime(value, errors="coerce")
             if pd.notna(parsed):
                 return parsed.to_pydatetime()
-    return datetime.utcnow()
+    return local_now()
 
 
 def init_db():
@@ -157,6 +195,10 @@ def init_db():
             if "created_at" not in contribution_columns:
                 connection.execute(text("ALTER TABLE contributions ADD COLUMN created_at DATETIME"))
                 connection.execute(text("UPDATE contributions SET created_at = transfer_date WHERE created_at IS NULL"))
+            if "reviewed_by_id" not in contribution_columns:
+                connection.execute(text("ALTER TABLE contributions ADD COLUMN reviewed_by_id INTEGER"))
+            if "reviewed_at" not in contribution_columns:
+                connection.execute(text("ALTER TABLE contributions ADD COLUMN reviewed_at DATETIME"))
 
             vote_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(loan_votes)")).fetchall()}
             if "created_at" not in vote_columns:
@@ -169,10 +211,20 @@ def init_db():
             }
             if "loan_repayments" not in repayment_tables:
                 LoanRepayment.__table__.create(bind=connection)
+            else:
+                repayment_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(loan_repayments)")).fetchall()}
+                if "reviewed_by_id" not in repayment_columns:
+                    connection.execute(text("ALTER TABLE loan_repayments ADD COLUMN reviewed_by_id INTEGER"))
+                if "reviewed_at" not in repayment_columns:
+                    connection.execute(text("ALTER TABLE loan_repayments ADD COLUMN reviewed_at DATETIME"))
             if "reminder_dispatch_logs" not in repayment_tables:
                 ReminderDispatchLog.__table__.create(bind=connection)
-        except OperationalError:
-            pass
+            if "audit_events" not in repayment_tables:
+                AuditEvent.__table__.create(bind=connection)
+            if "notification_logs" not in repayment_tables:
+                NotificationLog.__table__.create(bind=connection)
+        except OperationalError as exc:
+            raise RuntimeError("Database schema migration failed.") from exc
     db = SessionLocal()
     
     # Check if we need to seed the database
@@ -209,7 +261,7 @@ def init_db():
                 if pd.notna(amount) and amount > 0:
                     contribution = Contribution(
                         member_id=members_data[member_name],
-                        amount=float(amount),
+                        amount=Decimal(str(amount)).quantize(Decimal("0.01")),
                         transfer_date=date_val,
                         status="Approved",
                     )

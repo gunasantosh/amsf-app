@@ -9,6 +9,7 @@ The forgot-password flow is implemented, but real email sending only works after
 Set these environment variables before starting the app:
 
 - `AMSF_PUBLIC_BASE_URL`
+- `AMSF_TIMEZONE` (use `Asia/Kolkata` for Kolkata, India)
 - `AMSF_SMTP_HOST`
 - `AMSF_SMTP_PORT` (usually `587`)
 - `AMSF_SMTP_USER`
@@ -82,6 +83,8 @@ Recommended actions:
 - Keep the database on a stable local disk.
 - Back up `amsf.db` regularly.
 - Stop the app before taking manual file-level backups if possible.
+- Before deploying schema changes on Linux, stop the service and run `uv run python migrate_db.py`.
+- The migration command creates an integrity-checked timestamped backup in `./backups` by default.
 
 ## 5. Recommended: Confirm the Default Admin Member
 

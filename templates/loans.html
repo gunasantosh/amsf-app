@@ -19,7 +19,7 @@
                 <div>
                     <div class="list-title">{{ item.requester_name }} - {{ item.loan.status }}</div>
                     <div class="stat-label">Requested amount: Rs {{ "{:,.2f}".format(item.loan.amount_requested) }}</div>
-                    <div class="stat-label">Requested at: {{ item.loan.created_at.strftime("%Y-%m-%d %H:%M") if item.loan.created_at else "-" }}</div>
+                    <div class="stat-label">Requested at: {{ item.loan.created_at|local_datetime }}</div>
                 </div>
                 <div class="stat-label">Approvals: {{ item.approvals }}/{{ item.threshold }} | Rejections: {{ item.rejections }}</div>
             </summary>
@@ -28,7 +28,7 @@
                 {% if item.projection.total_return %}
                 <div class="stat-label">Projected return: Rs {{ "{:,.2f}".format(item.projection.total_return) }}</div>
                 <div class="stat-label">Monthly repayment for {{ item.projection.months }} month(s): Rs {{ "{:,.2f}".format(item.projection.monthly_installment) }}</div>
-                <div class="stat-label">Due date: {{ item.loan.due_date.strftime("%Y-%m-%d") if item.loan.due_date else "-" }}</div>
+                <div class="stat-label">Due date: {{ item.loan.due_date|local_date }}</div>
                 {% endif %}
                 <div class="vote-grid">
                     {% for status in item.vote_statuses %}
@@ -36,7 +36,7 @@
                         <strong>{{ status.display_name }}</strong>
                         <span>{{ status.status }}</span>
                         {% if status.timestamp %}
-                        <span>{{ status.timestamp.strftime("%Y-%m-%d %H:%M") }}</span>
+                        <span>{{ status.timestamp|local_datetime }}</span>
                         {% endif %}
                     </div>
                     {% endfor %}

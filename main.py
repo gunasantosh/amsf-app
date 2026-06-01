@@ -3,6 +3,7 @@ import calendar
 import os
 import secrets
 from datetime import datetime, timedelta
+from decimal import Decimal
 from math import floor
 from typing import Optional
 from urllib.parse import quote
@@ -16,6 +17,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import settings  # noqa: F401
+from app_time import format_local_date, format_local_datetime, local_now, utc_now
 from auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     create_access_token,
@@ -25,18 +27,22 @@ from auth import (
     verify_password,
 )
 from mailer import send_email, send_email_sync
+from activity import dispatch_queued, queue_notification, queue_notifications, record_event
 from database import (
+    AuditEvent,
     Contribution,
     Loan,
     LoanRepayment,
     LoanVote,
     Member,
+    NotificationLog,
     PasswordResetToken,
     get_db,
     get_display_name,
     init_db,
     months_active_since,
 )
+from money import ZERO, money, money_sum
 
 init_db()
 
@@ -50,10 +56,22 @@ os.makedirs("templates", exist_ok=True)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+templates.env.filters["local_datetime"] = format_local_datetime
+templates.env.filters["local_date"] = format_local_date
 
-MONTHLY_BASELINE = 200.0
+MONTHLY_BASELINE = Decimal("200.00")
 RESET_TOKEN_HOURS = 2
 PUBLIC_BASE_URL = os.getenv("AMSF_PUBLIC_BASE_URL", "").rstrip("/")
+
+
+@app.middleware("http")
+async def disable_dynamic_response_cache(request: Request, call_next):
+    response = await call_next(request)
+    if not request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 def majority_threshold(member_count: int) -> int:
@@ -82,36 +100,33 @@ def format_period_label(dt: datetime, period: str) -> str:
 
 
 def aggregate_contribution_series(contributions: list[Contribution], period: str) -> dict:
-    grouped: dict[str, float] = {}
-    running_total = 0.0
+    grouped: dict[str, Decimal] = {}
+    running_total = ZERO
     labels = []
     data = []
     for contribution in contributions:
         key = format_period_label(contribution.transfer_date, period)
-        grouped[key] = grouped.get(key, 0.0) + contribution.amount
+        grouped[key] = grouped.get(key, ZERO) + money(contribution.amount)
     for label in sorted(grouped.keys()):
         running_total += grouped[label]
         labels.append(label)
-        data.append(round(running_total, 2))
+        data.append(float(money(running_total)))
     return {"labels": labels, "data": data}
 
 
 def loan_projection(loan: Loan) -> dict:
     if loan.status != "Sanctioned" or loan.interest_rate is None or loan.due_date is None:
-        return {"total_return": None, "months": None, "monthly_installment": None, "approved_repayments": 0.0, "remaining_balance": None}
+        return {"total_return": None, "months": None, "monthly_installment": None, "approved_repayments": ZERO, "remaining_balance": None}
 
-    principal = loan.amount_requested
+    principal = money(loan.amount_requested)
     total_return = principal + (principal * loan.interest_rate / 100)
-    months = loan.repayment_months or month_difference(datetime.utcnow(), loan.due_date)
-    approved_repayments = round(
-        sum(repayment.amount for repayment in loan.repayments if repayment.status == "Approved"),
-        2,
-    )
-    remaining_balance = max(0.0, round(total_return - approved_repayments, 2))
+    months = loan.repayment_months or month_difference(utc_now(), loan.due_date)
+    approved_repayments = money_sum(repayment.amount for repayment in loan.repayments if repayment.status == "Approved")
+    remaining_balance = max(ZERO, money(total_return - approved_repayments))
     return {
-        "total_return": round(total_return, 2),
+        "total_return": money(total_return),
         "months": months,
-        "monthly_installment": round(total_return / months, 2),
+        "monthly_installment": money(total_return / months),
         "approved_repayments": approved_repayments,
         "remaining_balance": remaining_balance,
     }
@@ -243,27 +258,59 @@ def enrich_loans(
     return enriched
 
 
+def member_balance_summary(db: Session, member: Member) -> str:
+    approved_total = money(
+        db.query(func.sum(Contribution.amount))
+        .filter(Contribution.member_id == member.id, Contribution.status == "Approved")
+        .scalar()
+    )
+    target_total = money(months_active_since(member.join_date) * MONTHLY_BASELINE)
+    difference = money(target_total - approved_total)
+    balance_label = "Pending dues" if difference > ZERO else "Advance balance"
+    return (
+        f"Approved contributions: Rs {approved_total:,.2f}\n"
+        f"Current contribution target: Rs {target_total:,.2f}\n"
+        f"{balance_label}: Rs {abs(difference):,.2f}"
+    )
+
+
+def loan_vote_summary(loan: Loan, members: list[Member]) -> str:
+    vote_lookup = {vote.voter_id: vote.vote for vote in loan.votes}
+    approvers = [get_display_name(member) for member in members if vote_lookup.get(member.id) == "Approve"]
+    rejectors = [get_display_name(member) for member in members if vote_lookup.get(member.id) == "Reject"]
+    pending = [
+        get_display_name(member)
+        for member in members
+        if member.id != loan.requester_id and member.id not in vote_lookup
+    ]
+    return (
+        f"Approvals ({len(approvers)}): {', '.join(approvers) or 'None'}\n"
+        f"Rejections ({len(rejectors)}): {', '.join(rejectors) or 'None'}\n"
+        f"Yet to respond ({len(pending)}): {', '.join(pending) or 'None'}"
+    )
+
+
 def build_member_contribution_rows(members: list[Member], db: Session) -> list[dict]:
-    now = datetime.utcnow()
+    now = local_now()
     rows = []
     for member in members:
         approved_total = (
             db.query(func.sum(Contribution.amount))
             .filter(Contribution.member_id == member.id, Contribution.status == "Approved")
             .scalar()
-            or 0.0
+            or ZERO
         )
         pending_total = (
             db.query(func.sum(Contribution.amount))
             .filter(Contribution.member_id == member.id, Contribution.status == "Pending")
             .scalar()
-            or 0.0
+            or ZERO
         )
         reverted_total = (
             db.query(func.sum(Contribution.amount))
             .filter(Contribution.member_id == member.id, Contribution.status == "Reverted")
             .scalar()
-            or 0.0
+            or ZERO
         )
         target_total = months_active_since(member.join_date, now) * MONTHLY_BASELINE
         due_amount = target_total - approved_total
@@ -272,11 +319,11 @@ def build_member_contribution_rows(members: list[Member], db: Session) -> list[d
                 "member": member,
                 "display_name": member.original_name,
                 "public_name": get_display_name(member),
-                "approved_total": round(approved_total, 2),
-                "pending_total": round(pending_total, 2),
-                "reverted_total": round(reverted_total, 2),
-                "target_total": round(target_total, 2),
-                "due_amount": round(abs(due_amount), 2),
+                "approved_total": money(approved_total),
+                "pending_total": money(pending_total),
+                "reverted_total": money(reverted_total),
+                "target_total": money(target_total),
+                "due_amount": money(abs(due_amount)),
                 "due_status": "Pending Dues" if due_amount > 0 else "Advance Balance",
                 "completion_percent": round((approved_total / target_total) * 100, 1) if target_total else 0.0,
                 "current_month_paid": round(
@@ -288,7 +335,7 @@ def build_member_contribution_rows(members: list[Member], db: Session) -> list[d
                         func.strftime("%m", Contribution.transfer_date) == now.strftime("%m"),
                     )
                     .scalar()
-                    or 0.0,
+                    or ZERO,
                     2,
                 ),
             }
@@ -341,6 +388,15 @@ def setup_account(
     current_user.hashed_password = get_password_hash(new_password)
     current_user.password_changed = True
     current_user.alias = alias.strip() if alias and alias.strip() else None
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=current_user.id,
+        event_type="account.setup_completed",
+        entity_type="member",
+        entity_id=current_user.id,
+        summary=f"{get_display_name(current_user)} completed account setup.",
+    )
     db.commit()
     return redirect_with_message("/dashboard", "Account setup completed.", "success")
 
@@ -352,6 +408,15 @@ def update_alias(
     db: Session = Depends(get_db),
 ):
     current_user.alias = alias.strip() if alias.strip() else None
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=current_user.id,
+        event_type="profile.alias_changed",
+        entity_type="member",
+        entity_id=current_user.id,
+        summary=f"{current_user.original_name} updated their display alias.",
+    )
     db.commit()
     return redirect_with_message("/dashboard", "Alias updated.", "success")
 
@@ -368,12 +433,12 @@ def forgot_password(
         db.query(PasswordResetToken).filter(
             PasswordResetToken.member_id == user.id,
             PasswordResetToken.used_at.is_(None),
-        ).update({"used_at": datetime.utcnow()}, synchronize_session=False)
+        ).update({"used_at": utc_now()}, synchronize_session=False)
         token = secrets.token_urlsafe(32)
         reset_record = PasswordResetToken(
             member_id=user.id,
             token=token,
-            expires_at=datetime.utcnow() + timedelta(hours=RESET_TOKEN_HOURS),
+            expires_at=utc_now() + timedelta(hours=RESET_TOKEN_HOURS),
         )
         db.add(reset_record)
         db.commit()
@@ -399,7 +464,7 @@ def reset_password(
         .filter(
             PasswordResetToken.token == token,
             PasswordResetToken.used_at.is_(None),
-            PasswordResetToken.expires_at >= datetime.utcnow(),
+            PasswordResetToken.expires_at >= utc_now(),
         )
         .first()
     )
@@ -408,19 +473,21 @@ def reset_password(
 
     reset_record.member.hashed_password = get_password_hash(new_password)
     reset_record.member.password_changed = True
-    reset_record.used_at = datetime.utcnow()
+    reset_record.used_at = utc_now()
     db.commit()
     return redirect_with_message("/login", "Password updated. You can sign in now.", "success")
 
 
 @app.post("/api/contributions/report")
 def report_contribution(
-    amount: float = Form(...),
+    background_tasks: BackgroundTasks,
+    amount: Decimal = Form(...),
     transfer_date: str = Form(...),
     current_user: Member = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
-    if amount <= 0:
+    amount = money(amount)
+    if amount <= ZERO:
         return redirect_with_message("/dashboard", "Contribution amount must be greater than zero.", "error")
 
     contribution = Contribution(
@@ -430,13 +497,38 @@ def report_contribution(
         status="Pending",
     )
     db.add(contribution)
+    db.flush()
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=current_user.id,
+        event_type="contribution.reported",
+        entity_type="contribution",
+        entity_id=contribution.id,
+        summary=f"{get_display_name(current_user)} reported a contribution of Rs {amount:,.2f}.",
+    )
+    custodians = db.query(Member).filter(Member.is_admin.is_(True)).all()
+    notifications = queue_notifications(
+        db,
+        custodians,
+        subject="Contribution pending approval",
+        message=(
+            f"{get_display_name(current_user)} reported a contribution of Rs {amount:,.2f} "
+            f"for {contribution.transfer_date:%Y-%m-%d}. It is waiting for custodian review."
+        ),
+        event_type="contribution.reported",
+        entity_type="contribution",
+        entity_id=contribution.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, notifications)
     return redirect_with_message("/dashboard", "Contribution reported and sent for custodian review.", "success")
 
 
 @app.post("/api/loans/request")
 def request_loan(
-    amount_requested: float = Form(...),
+    background_tasks: BackgroundTasks,
+    amount_requested: Decimal = Form(...),
     reason: str = Form(...),
     current_user: Member = Depends(require_auth),
     db: Session = Depends(get_db),
@@ -445,10 +537,11 @@ def request_loan(
         db.query(func.sum(Contribution.amount))
         .filter(Contribution.member_id == current_user.id, Contribution.status == "Approved")
         .scalar()
-        or 0.0
+        or ZERO
     )
+    amount_requested = money(amount_requested)
     loan_cap = approved_total * 2
-    if amount_requested <= 0:
+    if amount_requested <= ZERO:
         return redirect_with_message("/dashboard", "Loan amount must be greater than zero.", "error")
     if amount_requested > loan_cap:
         return redirect_with_message(
@@ -459,13 +552,40 @@ def request_loan(
 
     loan = Loan(requester_id=current_user.id, amount_requested=amount_requested, reason=reason.strip(), status="Voting")
     db.add(loan)
+    db.flush()
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=current_user.id,
+        event_type="loan.requested",
+        entity_type="loan",
+        entity_id=loan.id,
+        summary=f"{get_display_name(current_user)} requested a loan of Rs {amount_requested:,.2f}.",
+        details=loan.reason,
+    )
+    members = db.query(Member).all()
+    notifications = queue_notifications(
+        db,
+        members,
+        subject="Loan request opened for voting",
+        message=(
+            f"{get_display_name(current_user)} requested a loan of Rs {amount_requested:,.2f}.\n"
+            f"Reason: {loan.reason}\n"
+            "The requester cannot vote on their own request. Other members can review and vote in AMSF."
+        ),
+        event_type="loan.requested",
+        entity_type="loan",
+        entity_id=loan.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, notifications)
     return redirect_with_message("/dashboard", "Loan request opened for member voting.", "success")
 
 
 @app.post("/api/loans/{loan_id}/vote")
 def vote_on_loan(
     loan_id: int,
+    background_tasks: BackgroundTasks,
     vote: str = Form(...),
     current_user: Member = Depends(require_auth),
     db: Session = Depends(get_db),
@@ -481,16 +601,46 @@ def vote_on_loan(
 
     existing_vote = db.query(LoanVote).filter(LoanVote.loan_id == loan_id, LoanVote.voter_id == current_user.id).first()
     if existing_vote:
+        previous_vote = existing_vote.vote
         existing_vote.vote = vote
+        existing_vote.created_at = utc_now()
     else:
+        previous_vote = None
         db.add(LoanVote(loan_id=loan_id, voter_id=current_user.id, vote=vote))
+    db.flush()
+    action = "updated their loan vote to" if previous_vote else "voted"
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=loan.requester_id,
+        event_type="loan.vote_recorded",
+        entity_type="loan",
+        entity_id=loan.id,
+        summary=f"{get_display_name(current_user)} {action} {vote} on loan #{loan.id}.",
+        details=f"Previous vote: {previous_vote or 'None'}",
+    )
+    members = db.query(Member).all()
+    notification = queue_notification(
+        db,
+        loan.requester,
+        subject=f"Loan #{loan.id} vote update",
+        message=(
+            f"{get_display_name(current_user)} voted {vote} on your loan request of Rs {loan.amount_requested:,.2f}.\n\n"
+            f"{loan_vote_summary(loan, members)}"
+        ),
+        event_type="loan.vote_recorded",
+        entity_type="loan",
+        entity_id=loan.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, [notification] if notification else [])
     return redirect_with_message("/dashboard", "Your vote has been recorded.", "success")
 
 
 @app.post("/api/loans/{loan_id}/cancel")
 def cancel_loan_request(
     loan_id: int,
+    background_tasks: BackgroundTasks,
     current_user: Member = Depends(require_auth),
     db: Session = Depends(get_db),
 ):
@@ -501,14 +651,38 @@ def cancel_loan_request(
         return redirect_with_message("/loans", "Only voting-stage loan requests can be cancelled.", "error")
 
     loan.status = "Cancelled"
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=current_user.id,
+        event_type="loan.cancelled",
+        entity_type="loan",
+        entity_id=loan.id,
+        summary=f"{get_display_name(current_user)} cancelled loan request #{loan.id}.",
+    )
+    members = db.query(Member).all()
+    notifications = queue_notifications(
+        db,
+        members,
+        subject=f"Loan #{loan.id} cancelled",
+        message=(
+            f"{get_display_name(current_user)} cancelled their loan request of Rs {loan.amount_requested:,.2f}.\n\n"
+            f"{loan_vote_summary(loan, members)}"
+        ),
+        event_type="loan.cancelled",
+        entity_type="loan",
+        entity_id=loan.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, notifications)
     return redirect_with_message("/loans", "Loan request cancelled.", "success")
 
 
 @app.post("/api/loan-repayments/report")
 def report_loan_repayment(
+    background_tasks: BackgroundTasks,
     loan_id: int = Form(...),
-    amount: float = Form(...),
+    amount: Decimal = Form(...),
     transfer_date: str = Form(...),
     current_user: Member = Depends(require_auth),
     db: Session = Depends(get_db),
@@ -516,7 +690,8 @@ def report_loan_repayment(
     loan = db.query(Loan).filter(Loan.id == loan_id, Loan.requester_id == current_user.id, Loan.status == "Sanctioned").first()
     if not loan:
         return redirect_with_message("/dashboard", "Selected sanctioned loan was not found.", "error")
-    if amount <= 0:
+    amount = money(amount)
+    if amount <= ZERO:
         return redirect_with_message("/dashboard", "Repayment amount must be greater than zero.", "error")
 
     repayment = LoanRepayment(
@@ -527,28 +702,81 @@ def report_loan_repayment(
         status="Pending",
     )
     db.add(repayment)
+    db.flush()
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=current_user.id,
+        event_type="loan_repayment.reported",
+        entity_type="loan_repayment",
+        entity_id=repayment.id,
+        summary=f"{get_display_name(current_user)} reported Rs {amount:,.2f} toward loan #{loan.id}.",
+    )
+    custodians = db.query(Member).filter(Member.is_admin.is_(True)).all()
+    notifications = queue_notifications(
+        db,
+        custodians,
+        subject="Loan repayment pending approval",
+        message=(
+            f"{get_display_name(current_user)} reported a repayment of Rs {amount:,.2f} "
+            f"toward loan #{loan.id}. It is waiting for custodian review."
+        ),
+        event_type="loan_repayment.reported",
+        entity_type="loan_repayment",
+        entity_id=repayment.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, notifications)
     return redirect_with_message("/dashboard", "Loan repayment reported and sent for custodian review.", "success")
 
 
 @app.post("/api/admin/contributions/{contribution_id}/approve")
 def approve_contribution(
     contribution_id: int,
+    background_tasks: BackgroundTasks,
     current_user: Member = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     contribution = db.query(Contribution).filter(Contribution.id == contribution_id).first()
     if not contribution:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if contribution.status != "Pending":
+        return redirect_with_message("/admin", "This contribution has already been reviewed.", "error")
     contribution.status = "Approved"
     contribution.custodian_feedback = None
+    contribution.reviewed_by_id = current_user.id
+    contribution.reviewed_at = utc_now()
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=contribution.member_id,
+        event_type="contribution.approved",
+        entity_type="contribution",
+        entity_id=contribution.id,
+        summary=f"{get_display_name(current_user)} approved Rs {contribution.amount:,.2f} from {get_display_name(contribution.member)}.",
+    )
+    db.flush()
+    notification = queue_notification(
+        db,
+        contribution.member,
+        subject="Contribution approved",
+        message=(
+            f"Your contribution of Rs {contribution.amount:,.2f} for {contribution.transfer_date:%Y-%m-%d} was approved.\n\n"
+            f"{member_balance_summary(db, contribution.member)}"
+        ),
+        event_type="contribution.approved",
+        entity_type="contribution",
+        entity_id=contribution.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, [notification] if notification else [])
     return redirect_with_message("/admin", "Contribution approved.", "success")
 
 
 @app.post("/api/admin/contributions/{contribution_id}/revert")
 def revert_contribution(
     contribution_id: int,
+    background_tasks: BackgroundTasks,
     feedback: str = Form(...),
     current_user: Member = Depends(require_admin),
     db: Session = Depends(get_db),
@@ -556,30 +784,85 @@ def revert_contribution(
     contribution = db.query(Contribution).filter(Contribution.id == contribution_id).first()
     if not contribution:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if contribution.status != "Pending":
+        return redirect_with_message("/admin", "This contribution has already been reviewed.", "error")
     contribution.status = "Reverted"
     contribution.custodian_feedback = feedback.strip()
+    contribution.reviewed_by_id = current_user.id
+    contribution.reviewed_at = utc_now()
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=contribution.member_id,
+        event_type="contribution.reverted",
+        entity_type="contribution",
+        entity_id=contribution.id,
+        summary=f"{get_display_name(current_user)} reverted Rs {contribution.amount:,.2f} from {get_display_name(contribution.member)}.",
+        details=contribution.custodian_feedback,
+    )
+    notification = queue_notification(
+        db,
+        contribution.member,
+        subject="Contribution needs correction",
+        message=(
+            f"Your reported contribution of Rs {contribution.amount:,.2f} was reverted.\n"
+            f"Custodian feedback: {contribution.custodian_feedback}"
+        ),
+        event_type="contribution.reverted",
+        entity_type="contribution",
+        entity_id=contribution.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, [notification] if notification else [])
     return redirect_with_message("/admin", "Contribution reverted with feedback.", "success")
 
 
 @app.post("/api/admin/loan-repayments/{repayment_id}/approve")
 def approve_loan_repayment(
     repayment_id: int,
+    background_tasks: BackgroundTasks,
     current_user: Member = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     repayment = db.query(LoanRepayment).filter(LoanRepayment.id == repayment_id).first()
     if not repayment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if repayment.status != "Pending":
+        return redirect_with_message("/admin", "This repayment has already been reviewed.", "error")
     repayment.status = "Approved"
     repayment.custodian_feedback = None
+    repayment.reviewed_by_id = current_user.id
+    repayment.reviewed_at = utc_now()
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=repayment.member_id,
+        event_type="loan_repayment.approved",
+        entity_type="loan_repayment",
+        entity_id=repayment.id,
+        summary=f"{get_display_name(current_user)} approved repayment #{repayment.id} of Rs {repayment.amount:,.2f}.",
+    )
+    notification = queue_notification(
+        db,
+        repayment.loan.requester,
+        subject="Loan repayment approved",
+        message=(
+            f"Your repayment of Rs {repayment.amount:,.2f} toward loan #{repayment.loan_id} was approved.\n"
+            f"Remaining loan balance: Rs {loan_projection(repayment.loan)['remaining_balance']:,.2f}"
+        ),
+        event_type="loan_repayment.approved",
+        entity_type="loan_repayment",
+        entity_id=repayment.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, [notification] if notification else [])
     return redirect_with_message("/admin", "Loan repayment approved.", "success")
 
 
 @app.post("/api/admin/loan-repayments/{repayment_id}/revert")
 def revert_loan_repayment(
     repayment_id: int,
+    background_tasks: BackgroundTasks,
     feedback: str = Form(...),
     current_user: Member = Depends(require_admin),
     db: Session = Depends(get_db),
@@ -587,16 +870,44 @@ def revert_loan_repayment(
     repayment = db.query(LoanRepayment).filter(LoanRepayment.id == repayment_id).first()
     if not repayment:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if repayment.status != "Pending":
+        return redirect_with_message("/admin", "This repayment has already been reviewed.", "error")
     repayment.status = "Reverted"
     repayment.custodian_feedback = feedback.strip()
+    repayment.reviewed_by_id = current_user.id
+    repayment.reviewed_at = utc_now()
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=repayment.member_id,
+        event_type="loan_repayment.reverted",
+        entity_type="loan_repayment",
+        entity_id=repayment.id,
+        summary=f"{get_display_name(current_user)} reverted repayment #{repayment.id} of Rs {repayment.amount:,.2f}.",
+        details=repayment.custodian_feedback,
+    )
+    notification = queue_notification(
+        db,
+        repayment.loan.requester,
+        subject="Loan repayment needs correction",
+        message=(
+            f"Your reported repayment of Rs {repayment.amount:,.2f} toward loan #{repayment.loan_id} was reverted.\n"
+            f"Custodian feedback: {repayment.custodian_feedback}"
+        ),
+        event_type="loan_repayment.reverted",
+        entity_type="loan_repayment",
+        entity_id=repayment.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, [notification] if notification else [])
     return redirect_with_message("/admin", "Loan repayment reverted with feedback.", "success")
 
 
 @app.post("/api/admin/loans/{loan_id}/sanction")
 def sanction_loan(
     loan_id: int,
-    interest_rate: float = Form(...),
+    background_tasks: BackgroundTasks,
+    interest_rate: Decimal = Form(...),
     repayment_months: int = Form(...),
     current_user: Member = Depends(require_admin),
     db: Session = Depends(get_db),
@@ -612,31 +923,111 @@ def sanction_loan(
 
     if repayment_months <= 0:
         return redirect_with_message("/admin", "Repayment months must be greater than zero.", "error")
+    if interest_rate < ZERO:
+        return redirect_with_message("/admin", "Interest rate cannot be negative.", "error")
 
     loan.status = "Sanctioned"
-    loan.interest_rate = interest_rate
+    loan.interest_rate = money(interest_rate)
     loan.repayment_months = repayment_months
-    loan.due_date = add_months(datetime.utcnow(), repayment_months)
+    loan.due_date = add_months(utc_now(), repayment_months)
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=loan.requester_id,
+        event_type="loan.sanctioned",
+        entity_type="loan",
+        entity_id=loan.id,
+        summary=f"{get_display_name(current_user)} sanctioned loan #{loan.id} for Rs {loan.amount_requested:,.2f}.",
+        details=f"Interest: {loan.interest_rate}% | Repayment months: {repayment_months}",
+    )
+    members = db.query(Member).all()
+    notifications = queue_notifications(
+        db,
+        members,
+        subject=f"Loan #{loan.id} sanctioned",
+        message=(
+            f"{get_display_name(loan.requester)}'s loan of Rs {loan.amount_requested:,.2f} was sanctioned.\n"
+            f"Interest: {loan.interest_rate}%\nRepayment period: {repayment_months} month(s)\n"
+            f"Due date: {format_local_date(loan.due_date)}"
+        ),
+        event_type="loan.sanctioned",
+        entity_type="loan",
+        entity_id=loan.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, notifications)
     return redirect_with_message("/admin", "Loan sanctioned.", "success")
 
 
 @app.post("/api/admin/loans/{loan_id}/reject")
 def reject_loan(
     loan_id: int,
+    background_tasks: BackgroundTasks,
     current_user: Member = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     loan = db.query(Loan).filter(Loan.id == loan_id).first()
     if not loan:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if loan.status != "Voting":
+        return redirect_with_message("/admin", "Only voting-stage loans can be rejected.", "error")
     loan.status = "Rejected"
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=loan.requester_id,
+        event_type="loan.rejected",
+        entity_type="loan",
+        entity_id=loan.id,
+        summary=f"{get_display_name(current_user)} rejected loan #{loan.id}.",
+    )
+    members = db.query(Member).all()
+    notifications = queue_notifications(
+        db,
+        members,
+        subject=f"Loan #{loan.id} rejected",
+        message=f"{get_display_name(loan.requester)}'s loan request of Rs {loan.amount_requested:,.2f} was rejected.",
+        event_type="loan.rejected",
+        entity_type="loan",
+        entity_id=loan.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, notifications)
     return redirect_with_message("/admin", "Loan marked as rejected.", "success")
+
+
+@app.post("/api/admin/notifications/{notification_id}/retry")
+def retry_notification(
+    notification_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: Member = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    notification = db.query(NotificationLog).filter(NotificationLog.id == notification_id).first()
+    if not notification:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if notification.status == "Sent":
+        return redirect_with_message("/admin", "That email was already delivered.", "info")
+
+    notification.status = "Queued"
+    notification.error_message = None
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=notification.recipient_member_id,
+        event_type="notification.retry_queued",
+        entity_type="notification",
+        entity_id=notification.id,
+        summary=f"{get_display_name(current_user)} queued email #{notification.id} for another delivery attempt.",
+    )
+    db.commit()
+    dispatch_queued(background_tasks, [notification])
+    return redirect_with_message("/admin", "Email queued for another delivery attempt.", "success")
 
 
 @app.post("/api/admin/change-custodian")
 def change_custodian(
+    background_tasks: BackgroundTasks,
     member_id: int = Form(...),
     current_user: Member = Depends(require_admin),
     db: Session = Depends(get_db),
@@ -647,7 +1038,26 @@ def change_custodian(
 
     db.query(Member).update({"is_admin": False}, synchronize_session=False)
     new_custodian.is_admin = True
+    record_event(
+        db,
+        actor_id=current_user.id,
+        subject_member_id=new_custodian.id,
+        event_type="custodian.changed",
+        entity_type="member",
+        entity_id=new_custodian.id,
+        summary=f"Custodian role transferred from {get_display_name(current_user)} to {get_display_name(new_custodian)}.",
+    )
+    notifications = queue_notifications(
+        db,
+        db.query(Member).all(),
+        subject="AMSF custodian changed",
+        message=f"The AMSF custodian role was transferred to {get_display_name(new_custodian)}.",
+        event_type="custodian.changed",
+        entity_type="member",
+        entity_id=new_custodian.id,
+    )
     db.commit()
+    dispatch_queued(background_tasks, notifications)
 
     if current_user.id == new_custodian.id:
         return redirect_with_message("/admin", "Custodian assignment confirmed.", "success")
@@ -690,13 +1100,13 @@ def setup_page(request: Request, current_user: Member = Depends(get_current_user
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, current_user: Member = Depends(require_auth), db: Session = Depends(get_db)):
-    now = datetime.utcnow()
+    now = local_now()
     months_active = months_active_since(current_user.join_date, now)
     total_approved = (
         db.query(func.sum(Contribution.amount))
         .filter(Contribution.member_id == current_user.id, Contribution.status == "Approved")
         .scalar()
-        or 0.0
+        or ZERO
     )
     due_amount = (months_active * MONTHLY_BASELINE) - total_approved
     due_status = "Pending Dues" if due_amount > 0 else "Advance Balance"
@@ -711,14 +1121,14 @@ def dashboard(request: Request, current_user: Member = Depends(require_auth), db
             func.strftime("%m", Contribution.transfer_date) == now.strftime("%m"),
         )
         .scalar()
-        or 0.0
+        or ZERO
     )
-    monthly_contribution_due = max(0.0, MONTHLY_BASELINE - current_month_paid)
+    monthly_contribution_due = max(ZERO, MONTHLY_BASELINE - current_month_paid)
     current_loan_exposure = (
         db.query(func.sum(Loan.amount_requested))
         .filter(Loan.requester_id == current_user.id, Loan.status == "Sanctioned")
         .scalar()
-        or 0.0
+        or ZERO
     )
     sanctioned_loans = (
         db.query(Loan)
@@ -734,15 +1144,15 @@ def dashboard(request: Request, current_user: Member = Depends(require_auth), db
             func.strftime("%m", LoanRepayment.transfer_date) == now.strftime("%m"),
         )
         .scalar()
-        or 0.0
+        or ZERO
     )
     projected_monthly_installment = round(
-        sum((loan_projection(loan)["monthly_installment"] or 0.0) for loan in sanctioned_loans),
+        sum((loan_projection(loan)["monthly_installment"] or ZERO for loan in sanctioned_loans), ZERO),
         2,
     )
-    monthly_loan_due = max(0.0, round(projected_monthly_installment - approved_repayments_this_month, 2))
+    monthly_loan_due = max(ZERO, money(projected_monthly_installment - approved_repayments_this_month))
     loan_cap = total_approved * 2
-    available_loan_capacity = max(0.0, loan_cap - current_loan_exposure)
+    available_loan_capacity = max(ZERO, loan_cap - current_loan_exposure)
     loan_capacity_percent = round((current_loan_exposure / loan_cap) * 100, 1) if loan_cap else 0.0
     loan_repayments = (
         db.query(LoanRepayment)
@@ -755,6 +1165,13 @@ def dashboard(request: Request, current_user: Member = Depends(require_auth), db
         db.query(Contribution)
         .filter(Contribution.member_id == current_user.id)
         .order_by(Contribution.transfer_date.desc())
+        .all()
+    )
+    personal_events = (
+        db.query(AuditEvent)
+        .filter(AuditEvent.subject_member_id == current_user.id)
+        .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+        .limit(50)
         .all()
     )
     payment_due = now.day > 10 and monthly_contribution_due > 0
@@ -799,6 +1216,7 @@ def dashboard(request: Request, current_user: Member = Depends(require_auth), db
             monthly_loan_due=monthly_loan_due,
             total_monthly_due=round(monthly_contribution_due + monthly_loan_due, 2),
             personal_contributions=personal_contributions,
+            personal_events=personal_events,
             sanctioned_loans=sanctioned_loans,
             loan_repayments=loan_repayments,
             loan_cap=loan_cap,
@@ -830,16 +1248,33 @@ def admin_dashboard(request: Request, current_user: Member = Depends(require_adm
     member_lookup = {member.id: member.original_name for member in all_members}
     public_member_lookup = {member.id: get_display_name(member) for member in all_members}
     member_rows = build_member_contribution_rows(all_members, db)
+    contribution_history_by_member = {
+        member.id: (
+            db.query(Contribution)
+            .filter(Contribution.member_id == member.id)
+            .order_by(Contribution.created_at.desc(), Contribution.id.desc())
+            .limit(8)
+            .all()
+        )
+        for member in all_members
+    }
     all_loans = db.query(Loan).order_by(Loan.id.desc()).all()
     loan_views = enrich_loans(all_loans, all_members, member_lookup, public_member_lookup)
 
-    total_contributions = db.query(func.sum(Contribution.amount)).filter(Contribution.status == "Approved").scalar() or 0.0
-    active_loans_total = db.query(func.sum(Loan.amount_requested)).filter(Loan.status == "Sanctioned").scalar() or 0.0
+    total_contributions = db.query(func.sum(Contribution.amount)).filter(Contribution.status == "Approved").scalar() or ZERO
+    active_loans_total = db.query(func.sum(Loan.amount_requested)).filter(Loan.status == "Sanctioned").scalar() or ZERO
     total_interest = (
         db.query(func.sum((Loan.amount_requested * Loan.interest_rate) / 100))
         .filter(Loan.status == "Sanctioned", Loan.interest_rate.is_not(None))
         .scalar()
-        or 0.0
+        or ZERO
+    )
+    recent_events = db.query(AuditEvent).order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).limit(100).all()
+    recent_notifications = (
+        db.query(NotificationLog)
+        .order_by(NotificationLog.created_at.desc(), NotificationLog.id.desc())
+        .limit(50)
+        .all()
     )
 
     return templates.TemplateResponse(
@@ -853,12 +1288,15 @@ def admin_dashboard(request: Request, current_user: Member = Depends(require_adm
             member_lookup=member_lookup,
             members=all_members,
             member_rows=member_rows,
+            contribution_history_by_member=contribution_history_by_member,
             loan_views=loan_views,
             total_fund=round(total_contributions, 2),
             liquid_cash=round(total_contributions - active_loans_total, 2),
             total_interest=round(total_interest, 2),
             majority_threshold=majority_threshold(len(all_members)),
-            today=datetime.utcnow().date().isoformat(),
+            recent_events=recent_events,
+            recent_notifications=recent_notifications,
+            today=local_now().date().isoformat(),
         ),
     )
 
@@ -904,36 +1342,36 @@ def get_dashboard_data(current_user: Member = Depends(require_auth), db: Session
         db.query(func.sum(Contribution.amount))
         .filter(Contribution.member_id == current_user.id, Contribution.status == "Approved")
         .scalar()
-        or 0.0
+        or ZERO
     )
-    total_group = db.query(func.sum(Contribution.amount)).filter(Contribution.status == "Approved").scalar() or 0.0
+    total_group = db.query(func.sum(Contribution.amount)).filter(Contribution.status == "Approved").scalar() or ZERO
     loan_ceiling = total_approved * 2
-    active_loans = db.query(func.sum(Loan.amount_requested)).filter(Loan.status == "Sanctioned").scalar() or 0.0
+    active_loans = db.query(func.sum(Loan.amount_requested)).filter(Loan.status == "Sanctioned").scalar() or ZERO
     personal_active_loans = (
         db.query(func.sum(Loan.amount_requested))
         .filter(Loan.requester_id == current_user.id, Loan.status == "Sanctioned")
         .scalar()
-        or 0.0
+        or ZERO
     )
-    liquid_cash = max(0.0, total_group - active_loans)
+    liquid_cash = max(ZERO, total_group - active_loans)
     target_amount = months_active_since(current_user.join_date) * MONTHLY_BASELINE
 
     return {
-        "pulse": {"series": pulse_series, "total": round(total_group, 2)},
+        "pulse": {"series": pulse_series, "total": float(money(total_group))},
         "equity": {
-            "used": round(personal_active_loans, 2),
-            "available": round(max(0.0, loan_ceiling - personal_active_loans), 2),
-            "ceiling": round(loan_ceiling, 2),
+            "used": float(money(personal_active_loans)),
+            "available": float(max(ZERO, money(loan_ceiling - personal_active_loans))),
+            "ceiling": float(money(loan_ceiling)),
         },
-        "health": {"liquid": round(liquid_cash, 2), "loans": round(active_loans, 2)},
+        "health": {"liquid": float(money(liquid_cash)), "loans": float(money(active_loans))},
         "baseline": {
             "labels": ["Target", "Actual"],
-            "data": [round(target_amount, 2), round(total_approved, 2)],
+            "data": [float(money(target_amount)), float(money(total_approved))],
             "achievementPercent": round((total_approved / target_amount) * 100, 1) if target_amount else 0.0,
         },
         "personalSplit": {
             "labels": [get_display_name(current_user), "Rest of Group"],
-            "data": [round(total_approved, 2), round(max(0.0, total_group - total_approved), 2)],
+            "data": [float(money(total_approved)), float(max(ZERO, money(total_group - total_approved)))],
         },
     }
 

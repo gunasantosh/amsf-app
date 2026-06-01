@@ -194,7 +194,7 @@
             <div class="list-card">
                 <div class="list-title">{{ item.requester_name }}</div>
                 <div class="stat-label">Requested Rs {{ "{:,.2f}".format(item.loan.amount_requested) }}</div>
-                <div class="stat-label">Requested at: {{ item.loan.created_at.strftime("%Y-%m-%d %H:%M") if item.loan.created_at else "-" }}</div>
+                <div class="stat-label">Requested at: {{ item.loan.created_at|local_datetime }}</div>
                 <p class="card-copy">{{ item.loan.reason }}</p>
                 <div class="stat-label">Approvals: {{ item.approvals }}/{{ item.threshold }} | Rejections: {{ item.rejections }}</div>
                 <form action="/api/loans/{{ item.loan.id }}/vote" method="POST" class="inline-actions">
@@ -215,7 +215,7 @@
             <div class="list-card">
                 <div class="list-title">{{ item.loan.status }}</div>
                 <div class="stat-label">Amount: Rs {{ "{:,.2f}".format(item.loan.amount_requested) }}</div>
-                <div class="stat-label">Requested at: {{ item.loan.created_at.strftime("%Y-%m-%d %H:%M") if item.loan.created_at else "-" }}</div>
+                <div class="stat-label">Requested at: {{ item.loan.created_at|local_datetime }}</div>
                 <div class="stat-label">Approvals: {{ item.approvals }}/{{ item.threshold }} | Rejections: {{ item.rejections }}</div>
                 {% if item.projection.total_return %}
                 <div class="stat-label">Projected return: Rs {{ "{:,.2f}".format(item.projection.total_return) }} over {{ item.projection.months }} month(s)</div>
@@ -243,6 +243,8 @@
                     <th>Date</th>
                     <th>Amount</th>
                     <th>Status</th>
+                    <th>Reported At</th>
+                    <th>Reviewed At</th>
                     <th>Custodian Feedback</th>
                 </tr>
             </thead>
@@ -252,8 +254,39 @@
                     <td>{{ contribution.transfer_date.strftime("%Y-%m-%d") }}</td>
                     <td>Rs {{ "{:,.2f}".format(contribution.amount) }}</td>
                     <td>{{ contribution.status }}</td>
+                    <td>{{ contribution.created_at|local_datetime }}</td>
+                    <td>{{ contribution.reviewed_at|local_datetime }}</td>
                     <td>{{ contribution.custodian_feedback or "-" }}</td>
                 </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="glass card" style="margin-top: 2rem;">
+    <div class="card-title">My Activity History</div>
+    <p class="card-copy">Chronological record of your financial requests and their decisions.</p>
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Summary</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for event in personal_events %}
+                <tr>
+                    <td>{{ event.created_at|local_datetime }}</td>
+                    <td>{{ event.event_type }}</td>
+                    <td>{{ event.summary }}</td>
+                    <td>{{ event.details or "-" }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">Your new activity will appear here.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
