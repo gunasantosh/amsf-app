@@ -39,6 +39,51 @@
 </div>
 
 <div class="glass card" style="margin-bottom: 2rem;">
+    <div class="card-title">Monthly Minimum Pending - {{ current_month_label }}</div>
+    <p class="card-copy">Members below the Rs {{ "{:,.2f}".format(monthly_baseline) }} approved contribution minimum for this month.</p>
+    {% if monthly_pending_members %}
+    <div class="table-wrap">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Member</th>
+                    <th>Approved This Month</th>
+                    <th>Pending Review This Month</th>
+                    <th>Still Short</th>
+                    <th>Lifetime Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in monthly_pending_members %}
+                <tr>
+                    <td>
+                        {{ row.display_name }}
+                        {% if row.member.alias %}
+                        <div class="stat-label">Alias: {{ row.public_name }}</div>
+                        {% endif %}
+                    </td>
+                    <td>Rs {{ "{:,.2f}".format(row.current_month_paid) }}</td>
+                    <td>
+                        Rs {{ "{:,.2f}".format(row.current_month_pending) }}
+                        {% if row.current_month_pending >= row.monthly_contribution_due %}
+                        <div class="stat-label text-success">Review pending report to clear this month.</div>
+                        {% elif row.current_month_pending > 0 %}
+                        <div class="stat-label">Pending reports cover part of the shortfall.</div>
+                        {% endif %}
+                    </td>
+                    <td><span class="text-danger">Rs {{ "{:,.2f}".format(row.monthly_contribution_due) }}</span></td>
+                    <td>{{ row.due_status }}: Rs {{ "{:,.2f}".format(row.due_amount) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">Every member has met the Rs {{ "{:,.2f}".format(monthly_baseline) }} approved contribution minimum for {{ current_month_label }}.</div>
+    {% endif %}
+</div>
+
+<div class="glass card" style="margin-bottom: 2rem;">
     <div class="card-title">Contribution Approval Queue</div>
     {% if pending_contributions %}
     <div class="table-wrap">

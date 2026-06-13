@@ -314,6 +314,29 @@ def build_member_contribution_rows(members: list[Member], db: Session) -> list[d
         )
         target_total = months_active_since(member.join_date, now) * MONTHLY_BASELINE
         due_amount = target_total - approved_total
+        current_month_paid = money(
+            db.query(func.sum(Contribution.amount))
+            .filter(
+                Contribution.member_id == member.id,
+                Contribution.status == "Approved",
+                func.strftime("%Y", Contribution.transfer_date) == now.strftime("%Y"),
+                func.strftime("%m", Contribution.transfer_date) == now.strftime("%m"),
+            )
+            .scalar()
+            or ZERO
+        )
+        current_month_pending = money(
+            db.query(func.sum(Contribution.amount))
+            .filter(
+                Contribution.member_id == member.id,
+                Contribution.status == "Pending",
+                func.strftime("%Y", Contribution.transfer_date) == now.strftime("%Y"),
+                func.strftime("%m", Contribution.transfer_date) == now.strftime("%m"),
+            )
+            .scalar()
+            or ZERO
+        )
+        monthly_contribution_due = max(ZERO, money(MONTHLY_BASELINE - current_month_paid))
         rows.append(
             {
                 "member": member,
@@ -326,18 +349,10 @@ def build_member_contribution_rows(members: list[Member], db: Session) -> list[d
                 "due_amount": money(abs(due_amount)),
                 "due_status": "Pending Dues" if due_amount > 0 else "Advance Balance",
                 "completion_percent": round((approved_total / target_total) * 100, 1) if target_total else 0.0,
-                "current_month_paid": round(
-                    db.query(func.sum(Contribution.amount))
-                    .filter(
-                        Contribution.member_id == member.id,
-                        Contribution.status == "Approved",
-                        func.strftime("%Y", Contribution.transfer_date) == now.strftime("%Y"),
-                        func.strftime("%m", Contribution.transfer_date) == now.strftime("%m"),
-                    )
-                    .scalar()
-                    or ZERO,
-                    2,
-                ),
+                "current_month_paid": round(current_month_paid, 2),
+                "current_month_pending": round(current_month_pending, 2),
+                "monthly_contribution_due": round(monthly_contribution_due, 2),
+                "monthly_minimum_met": monthly_contribution_due <= ZERO,
             }
         )
     return sorted(rows, key=lambda row: row["display_name"].lower())
@@ -1248,6 +1263,7 @@ def admin_dashboard(request: Request, current_user: Member = Depends(require_adm
     member_lookup = {member.id: member.original_name for member in all_members}
     public_member_lookup = {member.id: get_display_name(member) for member in all_members}
     member_rows = build_member_contribution_rows(all_members, db)
+    monthly_pending_members = [row for row in member_rows if not row["monthly_minimum_met"]]
     contribution_history_by_member = {
         member.id: (
             db.query(Contribution)
@@ -1288,6 +1304,9 @@ def admin_dashboard(request: Request, current_user: Member = Depends(require_adm
             member_lookup=member_lookup,
             members=all_members,
             member_rows=member_rows,
+            monthly_pending_members=monthly_pending_members,
+            monthly_baseline=MONTHLY_BASELINE,
+            current_month_label=local_now().strftime("%B %Y"),
             contribution_history_by_member=contribution_history_by_member,
             loan_views=loan_views,
             total_fund=round(total_contributions, 2),

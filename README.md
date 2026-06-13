@@ -57,25 +57,19 @@ nohup ./run.sh > amsf.log 2>&1 &
 
 ## Linux Production Deployment
 
-For releases that include database changes, stop the service before pulling and migrate once before starting the Uvicorn workers:
+Use [DEPLOYMENT_SOP.md](DEPLOYMENT_SOP.md) as the source of truth for production deploys.
+
+Short version for code-only releases:
 
 ```bash
 cd /path/to/amsf-app
-sudo systemctl stop amsf
 git pull --ff-only
 uv sync --frozen
-# Review .env and ensure AMSF_DATABASE_URL still points to the production DB.
-uv run python migrate_db.py
-sudo systemctl start amsf
+sudo systemctl restart amsf
 sudo systemctl status amsf --no-pager
-sudo journalctl -u amsf -n 100 --no-pager
 ```
 
-`migrate_db.py` checks SQLite integrity, creates a timestamped SQLite backup, applies additive schema updates, and verifies the resulting schema. Do not skip the backup-and-migrate step for a schema-changing release.
-
-For rollback, stop the service, restore the timestamped backup from `./backups`, check out the previous application revision, and start the service again.
-
-This release preserves existing production rows. It adds nullable review metadata columns to contribution and loan repayment records and creates `audit_events` and `notification_logs`. Existing SQLite `FLOAT` columns are read through decimal-safe application code; the migration does not rebuild or delete existing transaction tables. Historical actions remain intact, but newly added audit history starts recording from deployment onward.
+For DB-change releases, stop the service, pull the release, run `uv run python migrate_db.py`, then start the service. `migrate_db.py` checks SQLite integrity, creates a timestamped SQLite backup, applies additive schema updates, and verifies the resulting schema.
 
 ## Monthly Reminder Job
 
