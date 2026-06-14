@@ -105,19 +105,38 @@ How it works:
 Recommended setup:
 
 - Create a dedicated Drive folder for AMSF backups
-- Share that folder with the service account email from your Google Cloud credentials file
-- Set `AMSF_GOOGLE_SERVICE_ACCOUNT_FILE` or `GOOGLE_APPLICATION_CREDENTIALS`
-- Schedule `uv run python backup_db_to_google_drive.py` with Task Scheduler or cron
+- Put the backup variables in the repo's existing `.env` file
+- Use a Google OAuth client JSON for your personal Gmail account and a token file created once with `--authorize`
+- Schedule `uv run python backup_db_to_google_drive.py` with Task Scheduler or cron on Windows, or systemd on Linux
 
 Linux systemd example:
 
 - Copy [systemd/amsf-backup.service](systemd/amsf-backup.service) to `/etc/systemd/system/amsf-backup.service`
 - Copy [systemd/amsf-backup.timer](systemd/amsf-backup.timer) to `/etc/systemd/system/amsf-backup.timer`
-- Edit the paths in the service file to match your server, especially `WorkingDirectory`, `ExecStart`, `User`, and `Group`
+- The committed service file already assumes your repo is at `/opt/apps/amsf-app` and the service user is `guna999`
+- The backup job reads the repo's `.env`, so keep `AMSF_GOOGLE_DRIVE_FOLDER_ID`, `AMSF_GOOGLE_OAUTH_CLIENT_FILE`, `AMSF_GOOGLE_OAUTH_TOKEN_FILE`, and `AMSF_GOOGLE_DRIVE_KEEP_LAST` there
 - Run `sudo systemctl daemon-reload`
 - Run `sudo systemctl enable --now amsf-backup.timer`
 - Check `sudo systemctl status amsf-backup.timer`
 - Check `sudo systemctl list-timers --all | grep amsf-backup`
+
+OAuth variables for personal Gmail:
+
+```bash
+AMSF_GOOGLE_DRIVE_FOLDER_ID=your-folder-id
+AMSF_GOOGLE_OAUTH_CLIENT_FILE=/opt/apps/amsf-app/creds/google-oauth-client.json
+AMSF_GOOGLE_OAUTH_TOKEN_FILE=/opt/apps/amsf-app/creds/google-oauth-token.json
+AMSF_GOOGLE_DRIVE_KEEP_LAST=168
+```
+
+One-time authorization step:
+
+```bash
+cd /opt/apps/amsf-app
+uv run python backup_db_to_google_drive.py --authorize
+```
+
+That command opens the browser login flow, saves the refresh token to `AMSF_GOOGLE_OAUTH_TOKEN_FILE`, and later systemd can run headless using that token.
 
 Example manual run:
 

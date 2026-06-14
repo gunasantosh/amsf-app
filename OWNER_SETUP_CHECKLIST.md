@@ -85,7 +85,7 @@ Recommended actions:
 - Stop the app before taking manual file-level backups if possible.
 - Before deploying schema changes on Linux, stop the service and run `uv run python migrate_db.py`.
 - The migration command creates an integrity-checked timestamped backup in `./backups` by default.
-- If you want offsite backups, configure `AMSF_GOOGLE_DRIVE_FOLDER_ID` and `AMSF_GOOGLE_SERVICE_ACCOUNT_FILE`, then schedule `uv run python backup_db_to_google_drive.py`.
+- If you want offsite backups with personal Gmail, put `AMSF_GOOGLE_DRIVE_FOLDER_ID`, `AMSF_GOOGLE_OAUTH_CLIENT_FILE`, `AMSF_GOOGLE_OAUTH_TOKEN_FILE`, and `AMSF_GOOGLE_DRIVE_KEEP_LAST` in the repo's `.env`, then run `uv run python backup_db_to_google_drive.py --authorize` once before scheduling the backup job.
 
 ## 5. Recommended: Confirm the Default Admin Member
 

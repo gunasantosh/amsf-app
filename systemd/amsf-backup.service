@@ -5,8 +5,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=amsf
-Group=amsf
-WorkingDirectory=/opt/amsf-app
-EnvironmentFile=/etc/amsf/amsf.env
-ExecStart=/opt/amsf-app/.venv/bin/uv run python backup_db_to_google_drive.py
+User=guna999
+Group=guna999
+WorkingDirectory=/opt/apps/amsf-app
+ExecStart=/opt/apps/amsf-app/.venv/bin/python /opt/apps/amsf-app/backup_db_to_google_drive.py

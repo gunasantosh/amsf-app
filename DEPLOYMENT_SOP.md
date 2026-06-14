@@ -138,23 +138,34 @@ Recommended files from this repo:
 Step-by-step on the Linux server:
 
 1. Clone or pull the repo to the server.
-2. Copy your real Google service-account JSON to a private path on the server, for example `/etc/amsf/google-cred.json`.
-3. Put the Drive folder ID and credentials path into `/etc/amsf/amsf.env`.
-4. Edit the unit file so `WorkingDirectory` points to the repo path, `ExecStart` points to the server's `uv` and virtual environment, and `User` / `Group` match the app user.
-5. Reload systemd with `sudo systemctl daemon-reload`.
-6. Enable and start the timer with `sudo systemctl enable --now amsf-backup.timer`.
-7. Verify with `sudo systemctl status amsf-backup.timer` and `sudo systemctl list-timers --all`.
-8. Run one immediate backup with `sudo systemctl start amsf-backup.service`.
-9. Check the logs with `sudo journalctl -u amsf-backup.service -n 100 --no-pager`.
-10. Confirm that a new backup file appears in the Drive folder.
+2. Put the Drive folder ID and OAuth paths into the repo's `.env` file, for example `/opt/apps/amsf-app/.env`.
+3. Put your Google OAuth client JSON in the repo's `creds/` folder, for example `/opt/apps/amsf-app/creds/google-oauth-client.json`.
+4. Copy [systemd/amsf-backup.service](systemd/amsf-backup.service) and [systemd/amsf-backup.timer](systemd/amsf-backup.timer) to `/etc/systemd/system/`.
+5. If your repo path or Linux user is different, edit the service file; the committed template assumes `/opt/apps/amsf-app` and user `guna999`.
+6. Reload systemd with `sudo systemctl daemon-reload`.
+7. Enable and start the timer with `sudo systemctl enable --now amsf-backup.timer`.
+8. Verify with `sudo systemctl status amsf-backup.timer` and `sudo systemctl list-timers --all`.
+9. Run one immediate backup with `sudo systemctl start amsf-backup.service`.
+10. Check the logs with `sudo journalctl -u amsf-backup.service -n 100 --no-pager`.
+11. Confirm that a new backup file appears in the Drive folder.
 
-Suggested `/etc/amsf/amsf.env` entries:
+Suggested `.env` entries in the repo root:
 
 ```bash
 AMSF_GOOGLE_DRIVE_FOLDER_ID=your-drive-folder-id
-AMSF_GOOGLE_SERVICE_ACCOUNT_FILE=/etc/amsf/google-cred.json
+AMSF_GOOGLE_OAUTH_CLIENT_FILE=/opt/apps/amsf-app/creds/google-oauth-client.json
+AMSF_GOOGLE_OAUTH_TOKEN_FILE=/opt/apps/amsf-app/creds/google-oauth-token.json
 AMSF_GOOGLE_DRIVE_KEEP_LAST=7
 ```
+
+One-time local authorization step:
+
+```bash
+cd /opt/apps/amsf-app
+uv run python backup_db_to_google_drive.py --authorize
+```
+
+Run that once on a machine where a browser can open, then copy the generated token file to the server if needed. After that, systemd can run the backup job without any manual login.
 
 If you want backup timing to be different, change `OnCalendar=hourly` in the timer file. Examples:
 
