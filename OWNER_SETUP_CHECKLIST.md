@@ -85,6 +85,7 @@ Recommended actions:
 - Stop the app before taking manual file-level backups if possible.
 - Before deploying schema changes on Linux, stop the service and run `uv run python migrate_db.py`.
 - The migration command creates an integrity-checked timestamped backup in `./backups` by default.
+- If you want offsite backups, configure `AMSF_GOOGLE_DRIVE_FOLDER_ID` and `AMSF_GOOGLE_SERVICE_ACCOUNT_FILE`, then schedule `uv run python backup_db_to_google_drive.py`.
 
 ## 5. Recommended: Confirm the Default Admin Member
 
@@ -141,6 +142,8 @@ Decide one of these:
 - Run manually when needed
 - Use Task Scheduler on Windows
 - Use NSSM or another service wrapper to run it as a service
+
+If the app is running on Linux with systemd, keep the app service and backup timer separate. The app service runs `main.py`; the backup timer runs `backup_db_to_google_drive.py`.
 
 ## 8. Recommended: Schedule Monthly Reminder Emails
 

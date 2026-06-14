@@ -1,0 +1,10 @@
+[Unit]
+Description=Run AMSF Google Drive database backup on a schedule
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=amsf-backup.service
+
+[Install]
+WantedBy=timers.target

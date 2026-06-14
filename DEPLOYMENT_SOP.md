@@ -116,6 +116,52 @@ Only run the migration on live `amsf.db` after the copied DB works.
 
 Backups are created automatically by `migrate_db.py` in `AMSF_BACKUP_DIR`, or `./backups` by default.
 
+If you want off-machine backups in Google Drive, use [backup_db_to_google_drive.py](backup_db_to_google_drive.py).
+
+Recommended Drive backup flow:
+
+1. Create a dedicated Drive folder for AMSF database backups.
+2. Share that folder with the service account email from your Google credentials JSON.
+3. Set `AMSF_GOOGLE_DRIVE_FOLDER_ID` and `AMSF_GOOGLE_SERVICE_ACCOUNT_FILE` on the server.
+4. Schedule `uv run python backup_db_to_google_drive.py` every hour or after your chosen change window.
+5. Keep only the latest few backups in Drive with `AMSF_GOOGLE_DRIVE_KEEP_LAST`.
+
+### Linux systemd backup service
+
+Use this if the app itself is already running as a systemd service and you want the backup job managed the same way.
+
+Recommended files from this repo:
+
+- [systemd/amsf-backup.service](systemd/amsf-backup.service)
+- [systemd/amsf-backup.timer](systemd/amsf-backup.timer)
+
+Step-by-step on the Linux server:
+
+1. Clone or pull the repo to the server.
+2. Copy your real Google service-account JSON to a private path on the server, for example `/etc/amsf/google-cred.json`.
+3. Put the Drive folder ID and credentials path into `/etc/amsf/amsf.env`.
+4. Edit the unit file so `WorkingDirectory` points to the repo path, `ExecStart` points to the server's `uv` and virtual environment, and `User` / `Group` match the app user.
+5. Reload systemd with `sudo systemctl daemon-reload`.
+6. Enable and start the timer with `sudo systemctl enable --now amsf-backup.timer`.
+7. Verify with `sudo systemctl status amsf-backup.timer` and `sudo systemctl list-timers --all`.
+8. Run one immediate backup with `sudo systemctl start amsf-backup.service`.
+9. Check the logs with `sudo journalctl -u amsf-backup.service -n 100 --no-pager`.
+10. Confirm that a new backup file appears in the Drive folder.
+
+Suggested `/etc/amsf/amsf.env` entries:
+
+```bash
+AMSF_GOOGLE_DRIVE_FOLDER_ID=your-drive-folder-id
+AMSF_GOOGLE_SERVICE_ACCOUNT_FILE=/etc/amsf/google-cred.json
+AMSF_GOOGLE_DRIVE_KEEP_LAST=7
+```
+
+If you want backup timing to be different, change `OnCalendar=hourly` in the timer file. Examples:
+
+- `OnCalendar=*:0/30` for every 30 minutes
+- `OnCalendar=*-*-* 02:00:00` for 2 AM daily
+- `OnCalendar=daily` for once per day
+
 Manual backup:
 
 ```bash

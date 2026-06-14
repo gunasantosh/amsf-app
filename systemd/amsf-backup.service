@@ -1,0 +1,12 @@
+[Unit]
+Description=AMSF Google Drive database backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=amsf
+Group=amsf
+WorkingDirectory=/opt/amsf-app
+EnvironmentFile=/etc/amsf/amsf.env
+ExecStart=/opt/amsf-app/.venv/bin/uv run python backup_db_to_google_drive.py

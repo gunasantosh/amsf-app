@@ -34,6 +34,10 @@ Set `AMSF_DEFAULT_PASSWORD` if you want a different bootstrap password for fresh
 - `AMSF_SMTP_USER`: SMTP username
 - `AMSF_SMTP_PASSWORD`: SMTP password
 - `AMSF_SMTP_FROM`: optional sender email
+- `AMSF_GOOGLE_DRIVE_FOLDER_ID`: Drive folder that will receive database backups
+- `AMSF_GOOGLE_SERVICE_ACCOUNT_FILE`: service account JSON file for Drive uploads, defaults to `GOOGLE_APPLICATION_CREDENTIALS`
+- `AMSF_GOOGLE_DRIVE_KEEP_LAST`: number of Drive backup files to keep, default `7`
+- `AMSF_GOOGLE_DRIVE_BACKUP_PREFIX`: filename prefix for Drive backups, default the database filename stem plus `-`
 
 The app automatically loads variables from `.env`.
 
@@ -86,6 +90,39 @@ Run manually:
 
 ```bash
 uv run python send_reminders.py
+```
+
+## Google Drive Backups
+
+The repository includes [backup_db_to_google_drive.py](backup_db_to_google_drive.py) for periodic Drive backups of the SQLite database.
+
+How it works:
+
+- Creates a consistent SQLite snapshot
+- Uploads it to the Drive folder in `AMSF_GOOGLE_DRIVE_FOLDER_ID`
+- Keeps only the newest `AMSF_GOOGLE_DRIVE_KEEP_LAST` files in that folder
+
+Recommended setup:
+
+- Create a dedicated Drive folder for AMSF backups
+- Share that folder with the service account email from your Google Cloud credentials file
+- Set `AMSF_GOOGLE_SERVICE_ACCOUNT_FILE` or `GOOGLE_APPLICATION_CREDENTIALS`
+- Schedule `uv run python backup_db_to_google_drive.py` with Task Scheduler or cron
+
+Linux systemd example:
+
+- Copy [systemd/amsf-backup.service](systemd/amsf-backup.service) to `/etc/systemd/system/amsf-backup.service`
+- Copy [systemd/amsf-backup.timer](systemd/amsf-backup.timer) to `/etc/systemd/system/amsf-backup.timer`
+- Edit the paths in the service file to match your server, especially `WorkingDirectory`, `ExecStart`, `User`, and `Group`
+- Run `sudo systemctl daemon-reload`
+- Run `sudo systemctl enable --now amsf-backup.timer`
+- Check `sudo systemctl status amsf-backup.timer`
+- Check `sudo systemctl list-timers --all | grep amsf-backup`
+
+Example manual run:
+
+```bash
+uv run python backup_db_to_google_drive.py
 ```
 
 Recommended scheduling:
